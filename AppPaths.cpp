@@ -26,31 +26,60 @@ fs::path executableDir() {
     if (_NSGetExecutablePath(buf.data(), &size) != 0) return {};
 
     std::error_code ec;
-    fs::path p = fs::canonical(fs::path(buf.data()), ec);
+    const fs::path p = fs::canonical(fs::path(buf.data()), ec);
     if (ec) return {};
     return p.parent_path();
 }
 
 fs::path resolveRoot() {
     if (const char* env = std::getenv("APOLLO_HOME")) {
-        fs::path p(env);
+        const fs::path p = expandUser(env);
         if (looksLikeRoot(p)) return p;
     }
 
-    // The executable may live inside the source tree, or in a build/ subdir.
-    for (fs::path p = executableDir(); !p.empty() && p != p.root_path(); p = p.parent_path()) {
+    const fs::path exeDir = executableDir();
+
+    // Running straight out of the source tree (or a build/ subdir of it).
+    for (fs::path p = exeDir; !p.empty() && p != p.root_path(); p = p.parent_path()) {
         if (looksLikeRoot(p)) return p;
     }
 
-    fs::path baked(APOLLO_DEFAULT_HOME);
+    // Installed layout: <prefix>/bin/apollo alongside <prefix>/share/apollo.
+    if (!exeDir.empty()) {
+        const fs::path shared = exeDir.parent_path() / "share" / "apollo";
+        if (looksLikeRoot(shared)) return shared;
+    }
+
+    const fs::path baked(APOLLO_DEFAULT_HOME);
     if (!baked.empty() && looksLikeRoot(baked)) return baked;
 
     std::error_code ec;
-    fs::path cwd = fs::current_path(ec);
+    const fs::path cwd = fs::current_path(ec);
     return ec ? fs::path(".") : cwd;
 }
 
+fs::path resolveConfigDir() {
+    if (const char* env = std::getenv("APOLLO_CONFIG_DIR")) {
+        if (*env) return expandUser(env);
+    }
+    return homeDir() / ".apollo";
+}
+
 } // namespace
+
+fs::path homeDir() {
+    if (const char* home = std::getenv("HOME")) {
+        if (*home) return fs::path(home);
+    }
+    return fs::path("/tmp");
+}
+
+fs::path expandUser(const std::string& path) {
+    if (path.empty() || path[0] != '~') return fs::path(path);
+    if (path.size() == 1) return homeDir();
+    if (path[1] != '/') return fs::path(path); // ~otheruser is not supported
+    return homeDir() / path.substr(2);
+}
 
 const fs::path& appRoot() {
     static const fs::path root = resolveRoot();
@@ -61,8 +90,26 @@ fs::path assetPath(const std::string& name) {
     return appRoot() / "assets" / name;
 }
 
+const fs::path& configDir() {
+    static const fs::path dir = resolveConfigDir();
+    return dir;
+}
+
 fs::path configPath() {
+    return configDir() / "config.properties";
+}
+
+fs::path legacyConfigPath() {
     return appRoot() / "apollo.properties";
+}
+
+bool ensureConfigDir() {
+    std::error_code ec;
+    fs::create_directories(configDir(), ec);
+    if (ec) return false;
+    // The file holds SSH passwords; keep it out of other accounts' reach.
+    fs::permissions(configDir(), fs::perms::owner_all, fs::perm_options::replace, ec);
+    return true;
 }
 
 } // namespace apollo

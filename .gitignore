@@ -1,4 +1,5 @@
-# Local secrets — never commit. Copy apollo.properties.example and fill in.
+# Local secrets. Settings now live in ~/.apollo/config.properties; this is the
+# pre-0.2 file, kept only so an existing install can migrate from it.
 apollo.properties
 
 # macOS
@@ -8,4 +9,5 @@ apollo.properties
 build/
 *.o
 *.d
+apollo
 launchApollo
