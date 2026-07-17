@@ -1,0 +1,11 @@
+# Local secrets — never commit. Copy apollo.properties.example and fill in.
+apollo.properties
+
+# macOS
+.DS_Store
+
+# Build output
+build/
+*.o
+*.d
+launchApollo
