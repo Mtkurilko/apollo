@@ -1,32 +1,47 @@
 #ifndef SYSTEM_H
 #define SYSTEM_H
 
-#include "Terminal.h"
-#include <string>
 #include <array>
 #include <filesystem>
+#include <string>
+
 #include <SFML/Graphics.hpp>
-#include <chrono>
-#include <ctime>
+
+#include "Terminal.h"
 
 class System {
 public:
     System();
+
     void update();
-    void setUserAction(char input);
-    Terminal terminal;
-    void setRootDir(std::string path);
-    bool isRoot();
-    int getItemCount();
     void display(sf::RenderWindow* window);
-    bool isBooting();
+
+    void setUserAction(char input);
+    void setRootDir(std::string path);
     void setInput(std::string inString);
+
+    bool isRoot();
+    bool isBooting();
+    int getItemCount();
     void executeClick(int locationX, int locationY);
+
+    // Forces a directory re-read on the next update().
+    void requestRefresh();
+
+    Terminal terminal;
+
 private:
+    static constexpr std::size_t kMaxEntries = 1000;
+
     void checkBoot(sf::RenderWindow* window);
+    void refreshListing();
+    void drawChrome(sf::RenderWindow* window);
+    void drawColumns(sf::RenderWindow* window);
+
     char userAction;
     std::filesystem::path rootDir;
     std::filesystem::path currDir;
+
     sf::Texture apolloTexture;
     sf::Sprite apolloHead;
     sf::Texture columnTexture;
@@ -34,15 +49,25 @@ private:
     sf::Texture folderTexture;
     sf::Sprite folderSprite;
     sf::Text title;
+
     bool bootScreen;
-    long last_run_time;
-    std::array<std::string, 1000> folders;
-    std::array<std::string, 1000> files;
+
+    std::array<std::string, kMaxEntries> folders;
+    std::array<std::string, kMaxEntries> files;
     int folderCount;
     int fileCount;
+
+    // Directory listings refresh on events (cd, finished command, connect),
+    // not on a timer. Locally we also watch the directory's mtime so changes
+    // made outside Apollo still show up.
+    bool listingDirty;
+    sf::Clock mtimeClock;
+    std::filesystem::file_time_type lastWriteTime;
+
     enum Boot { Initial, Password, Anim, Exit, Finished };
     Boot bootStep;
-    // boot typing
+
+    // boot typing animation
     std::string bootTitleFull = "APOLLO";
     std::size_t bootTitleVisibleChars = 0;
     bool bootTitleDone = false;

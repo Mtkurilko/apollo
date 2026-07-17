@@ -1,472 +1,650 @@
 #include "Terminal.h"
 
-#include <string>
-#include <array>
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
-#include <iostream>
 #include <filesystem>
-#include <sstream>
-#include <unistd.h>
-#include <sys/stat.h>
 #include <fstream>
-#include <SFML/Graphics.hpp>
+#include <iostream>
+#include <sstream>
 #include <vector>
+
+#include <csignal>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include "AppPaths.h"
 
 namespace fs = std::filesystem;
 
-Terminal::Terminal() : filePage(1), remoteServer(nullptr) {
-    // Load the font once for use by System boot visuals and terminal rendering
-    if (!font.openFromFile("/Users/you/Apollo/apollo_project/assets/GFSNeohellenic-Regular.ttf")) {
-        // Silent fail for now; System boot text won't render if missing
-        // Could add logging if desired
+namespace {
+
+// Preferred terminal typefaces, best first. A proportional font makes every
+// columnar command (`ls -l`, `git status`, `ps`) misalign, so we look for a
+// real monospace face before falling back to the bundled UI font.
+const char* const kMonoCandidates[] = {
+    "/System/Library/Fonts/Menlo.ttc",
+    "/System/Library/Fonts/Monaco.ttf",
+    "/System/Library/Fonts/Supplemental/Courier New.ttf",
+};
+
+std::string stripCarriageReturn(std::string s) {
+    while (!s.empty() && (s.back() == '\r' || s.back() == '\n')) s.pop_back();
+    return s;
+}
+
+// Escape spaces for a remote shell, except on ~-rooted paths where the tilde
+// must stay unquoted for the remote shell to expand it.
+std::string escapeForShell(const std::string& str) {
+    const bool isTildePath = !str.empty() && str[0] == '~';
+    std::string result;
+    result.reserve(str.size());
+    for (char c : str) {
+        if (c == ' ' && !isTildePath) result += '\\';
+        result += c;
     }
-    
-    // Initialize remote server connection (lazy-loaded on first use)
-    // Can be initialized here if apollo.properties exists
-    std::string configPath = "/Users/you/Apollo/apollo_project/apollo.properties";
+    return result;
+}
+
+} // namespace
+
+Terminal::Terminal() : filePage(1), remoteServer(nullptr) {
+    if (!font.openFromFile(apollo::assetPath("GFSNeohellenic-Regular.ttf").string())) {
+        std::cerr << "Apollo: could not load UI font from " << apollo::appRoot() << std::endl;
+    }
+
+    bool monoLoaded = false;
+    for (const char* candidate : kMonoCandidates) {
+        if (fs::exists(candidate) && monoFont.openFromFile(candidate)) {
+            monoLoaded = true;
+            break;
+        }
+    }
+    if (!monoLoaded) monoFont = font; // last resort: proportional, but legible
+
+    // Every cell in a monospace face has the same advance, so one measurement
+    // gives us exact column math without laying out text every frame.
+    glyphAdvance = monoFont.getGlyph(U'M', lineSize, false).advance;
+    if (glyphAdvance <= 0.f) glyphAdvance = static_cast<float>(lineSize) * 0.6f;
+
+    const fs::path configPath = apollo::configPath();
     if (fs::exists(configPath)) {
-        remoteServer = std::make_unique<RemoteServer>(configPath);
+        remoteServer = std::make_unique<RemoteServer>(configPath.string());
     }
 }
 
+Terminal::~Terminal() {
+    cancelCommand();
+    if (worker.joinable()) worker.join();
+}
+
+// ---------------------------------------------------------------------------
+// Scrollback
+// ---------------------------------------------------------------------------
+
+void Terminal::pushLine(std::string s) {
+    scrollback.push_back(std::move(s));
+    while (scrollback.size() > kMaxScrollback) scrollback.pop_front();
+}
+
+void Terminal::addHistory(std::string input) {
+    if (input.empty()) return;
+    pushLine(std::move(input));
+}
+
+void Terminal::appendOutputBlock(const std::string& text) {
+    std::istringstream rs(text);
+    std::string line;
+    while (std::getline(rs, line)) pushLine("   " + stripCarriageReturn(line));
+}
+
+void Terminal::pump() {
+    std::vector<std::string> batch;
+    {
+        std::lock_guard<std::mutex> lock(outMutex);
+        if (pendingOutput.empty()) return;
+        batch.swap(pendingOutput);
+    }
+    for (auto& line : batch) pushLine(std::move(line));
+    if (scrollOffset > 0) scrollOffset += static_cast<int>(batch.size());
+}
+
+bool Terminal::consumeDirectoryChanged() {
+    return dirChanged.exchange(false, std::memory_order_relaxed);
+}
+
+void Terminal::scrollToBottom() {
+    scrollOffset = 0;
+}
+
+// ---------------------------------------------------------------------------
+// Asynchronous command execution
+// ---------------------------------------------------------------------------
+
+void Terminal::reapWorker() {
+    if (worker.joinable() && !commandRunning.load()) worker.join();
+}
+
+void Terminal::runAsync(const std::string& shellCommand) {
+    reapWorker();
+    if (worker.joinable()) return; // a command is still live
+    commandRunning.store(true);
+
+    worker = std::thread([this, shellCommand]() {
+        int fds[2];
+        if (pipe(fds) != 0) {
+            std::lock_guard<std::mutex> lock(outMutex);
+            pendingOutput.push_back("   ERROR: pipe() failed");
+            commandRunning.store(false);
+            return;
+        }
+
+        const pid_t pid = fork();
+        if (pid < 0) {
+            close(fds[0]);
+            close(fds[1]);
+            std::lock_guard<std::mutex> lock(outMutex);
+            pendingOutput.push_back("   ERROR: fork() failed");
+            commandRunning.store(false);
+            return;
+        }
+
+        if (pid == 0) {
+            // Child: own process group so Ctrl+C can signal the whole job.
+            setpgid(0, 0);
+            dup2(fds[1], STDOUT_FILENO);
+            dup2(fds[1], STDERR_FILENO);
+            close(fds[0]);
+            close(fds[1]);
+            execl("/bin/sh", "sh", "-c", shellCommand.c_str(), static_cast<char*>(nullptr));
+            _exit(127);
+        }
+
+        close(fds[1]);
+        setpgid(pid, pid); // racy with the child's own call; whichever wins is fine
+        childPid.store(pid);
+
+        // Stream output line by line so long-running commands appear as they go
+        // instead of landing in one lump when the process exits.
+        std::string buffer;
+        char chunk[4096];
+        ssize_t n;
+        while ((n = read(fds[0], chunk, sizeof(chunk))) > 0) {
+            buffer.append(chunk, static_cast<std::size_t>(n));
+            std::size_t nl;
+            std::vector<std::string> lines;
+            while ((nl = buffer.find('\n')) != std::string::npos) {
+                lines.push_back("   " + stripCarriageReturn(buffer.substr(0, nl)));
+                buffer.erase(0, nl + 1);
+            }
+            if (!lines.empty()) {
+                std::lock_guard<std::mutex> lock(outMutex);
+                for (auto& l : lines) pendingOutput.push_back(std::move(l));
+            }
+        }
+        if (!buffer.empty()) {
+            std::lock_guard<std::mutex> lock(outMutex);
+            pendingOutput.push_back("   " + stripCarriageReturn(buffer));
+        }
+        close(fds[0]);
+
+        int status = 0;
+        waitpid(pid, &status, 0);
+        childPid.store(-1);
+        dirChanged.store(true);
+        commandRunning.store(false);
+    });
+}
+
+void Terminal::runRemote(const std::string& shellCommand) {
+    reapWorker();
+    if (worker.joinable()) return;
+    commandRunning.store(true);
+
+    RemoteServer* remote = remoteServer.get();
+    worker = std::thread([this, remote, shellCommand]() {
+        const std::string result = remote->executeRemoteCommand(shellCommand);
+        std::vector<std::string> lines;
+        std::istringstream rs(result);
+        std::string line;
+        while (std::getline(rs, line)) lines.push_back("   " + stripCarriageReturn(line));
+        {
+            std::lock_guard<std::mutex> lock(outMutex);
+            for (auto& l : lines) pendingOutput.push_back(std::move(l));
+        }
+        dirChanged.store(true);
+        commandRunning.store(false);
+    });
+}
+
+void Terminal::cancelCommand() {
+    const int pid = childPid.load();
+    if (pid > 0) killpg(static_cast<pid_t>(pid), SIGINT);
+}
+
+// ---------------------------------------------------------------------------
+// Input handling
+// ---------------------------------------------------------------------------
+
+std::size_t Terminal::prevWordBoundary() const {
+    std::size_t i = cursor;
+    while (i > 0 && std::isspace(static_cast<unsigned char>(command[i - 1]))) --i;
+    while (i > 0 && !std::isspace(static_cast<unsigned char>(command[i - 1]))) --i;
+    return i;
+}
+
+std::size_t Terminal::nextWordBoundary() const {
+    std::size_t i = cursor;
+    while (i < command.size() && std::isspace(static_cast<unsigned char>(command[i]))) ++i;
+    while (i < command.size() && !std::isspace(static_cast<unsigned char>(command[i]))) ++i;
+    return i;
+}
+
+void Terminal::rememberCommand(const std::string& line) {
+    if (line.empty()) return;
+    if (!cmdHistory.empty() && cmdHistory.back() == line) return;
+    cmdHistory.push_back(line);
+    if (cmdHistory.size() > kMaxCommandHistory) cmdHistory.erase(cmdHistory.begin());
+}
+
+void Terminal::recallHistory(int direction) {
+    if (cmdHistory.empty()) return;
+
+    if (historyPos == -1) {
+        if (direction > 0) return; // already on the fresh line
+        stashedLine = command;
+        historyPos = static_cast<int>(cmdHistory.size()) - 1;
+    } else {
+        const int next = historyPos + direction;
+        if (next < 0) return;
+        if (next >= static_cast<int>(cmdHistory.size())) {
+            historyPos = -1;
+            command = stashedLine;
+            cursor = command.size();
+            scrollToBottom();
+            return;
+        }
+        historyPos = next;
+    }
+
+    command = cmdHistory[static_cast<std::size_t>(historyPos)];
+    cursor = command.size();
+    scrollToBottom();
+}
+
+bool Terminal::onKey(const sf::Event::KeyPressed& key) {
+    using Key = sf::Keyboard::Key;
+    cursorBlink.restart(); // keep the caret solid while typing
+
+    if (key.control) {
+        switch (key.code) {
+            case Key::A: cursor = 0; return true;
+            case Key::E: cursor = command.size(); return true;
+            case Key::K: command.erase(cursor); return true;
+            case Key::U: command.erase(0, cursor); cursor = 0; return true;
+            case Key::W: {
+                const std::size_t start = prevWordBoundary();
+                command.erase(start, cursor - start);
+                cursor = start;
+                return true;
+            }
+            case Key::C:
+                if (isBusy()) {
+                    cancelCommand();
+                    pushLine("^C");
+                } else {
+                    pushLine("APOLLO % " + command + "^C");
+                    command.clear();
+                    cursor = 0;
+                }
+                historyPos = -1;
+                scrollToBottom();
+                return true;
+            case Key::L:
+                scrollback.clear();
+                scrollToBottom();
+                return true;
+            case Key::D:
+                if (command.empty()) quitRequested = true;
+                return true;
+            default: break;
+        }
+    }
+
+    switch (key.code) {
+        case Key::Left:
+            cursor = key.alt ? prevWordBoundary() : (cursor > 0 ? cursor - 1 : 0);
+            return true;
+        case Key::Right:
+            cursor = key.alt ? nextWordBoundary()
+                             : (cursor < command.size() ? cursor + 1 : command.size());
+            return true;
+        case Key::Home: cursor = 0; return true;
+        case Key::End: cursor = command.size(); return true;
+        case Key::Up: recallHistory(-1); return true;
+        case Key::Down: recallHistory(+1); return true;
+        case Key::PageUp: onScroll(+8.f); return true;
+        case Key::PageDown: onScroll(-8.f); return true;
+        case Key::Backspace:
+            if (cursor > 0) {
+                command.erase(cursor - 1, 1);
+                --cursor;
+            }
+            scrollToBottom();
+            return true;
+        case Key::Delete:
+            if (cursor < command.size()) command.erase(cursor, 1);
+            return true;
+        case Key::Tab:
+            autocomplete(command);
+            cursor = command.size();
+            scrollToBottom();
+            return true;
+        case Key::Enter:
+            submit();
+            return true;
+        default:
+            return false;
+    }
+}
+
+void Terminal::onText(char32_t unicode) {
+    if (unicode < 32 || unicode > 126) return; // control chars come via onKey
+    command.insert(cursor, 1, static_cast<char>(unicode));
+    ++cursor;
+    historyPos = -1;
+    cursorBlink.restart();
+    scrollToBottom();
+}
+
+void Terminal::onScroll(float delta) {
+    // One notch moves three lines, matching the platform convention.
+    scrollOffset += static_cast<int>(delta * 3.f);
+    if (scrollOffset < 0) scrollOffset = 0;
+    const int maxScroll = static_cast<int>(scrollback.size());
+    if (scrollOffset > maxScroll) scrollOffset = maxScroll;
+}
+
+void Terminal::submit() {
+    if (isBusy()) {
+        pushLine("   (a command is still running — press Ctrl+C to cancel)");
+        return;
+    }
+    rememberCommand(command);
+    historyPos = -1;
+    stashedLine.clear();
+    scrollToBottom();
+    executeCommand();
+    command.clear();
+    cursor = 0;
+}
+
+// ---------------------------------------------------------------------------
+// Command execution
+// ---------------------------------------------------------------------------
+
 void Terminal::setCommand(std::string input) {
-    command = input;
+    command = std::move(input);
+    cursor = command.size();
+}
+
+void Terminal::openTerminalApp() {
+    if (remoteServer && remoteServer->isConnected()) {
+        const std::string workingDir = remoteServer->getRemoteWorkingDir();
+        const bool isTildePath = !workingDir.empty() && workingDir[0] == '~';
+        const std::string escapedDir = isTildePath ? workingDir : escapeForShell(workingDir);
+
+        const std::string tempScript = "/tmp/apollo_ssh_" + std::to_string(getpid()) + ".command";
+        std::ofstream scriptFile(tempScript);
+        scriptFile << "#!/bin/bash\n";
+        scriptFile << "sshpass -p '" << remoteServer->getPassword() << "' ssh "
+                   << "-o StrictHostKeyChecking=no -p " << remoteServer->getPort() << " "
+                   << remoteServer->getUser() << "@" << remoteServer->getHost()
+                   << " -t 'cd " << escapedDir << "; exec bash'\n";
+        scriptFile.close();
+        chmod(tempScript.c_str(), 0755);
+
+        const std::string cmd = "open -a Terminal \"" + tempScript + "\"";
+        system(cmd.c_str());
+    } else {
+        const std::string cmd = "open -a Terminal \"" + fs::current_path().string() + "\"";
+        system(cmd.c_str());
+    }
+}
+
+bool Terminal::runBuiltin(const std::string& name, const std::string& argument) {
+    if (name != "apollo") return false;
+
+    const std::string echo = "APOLLO % apollo" + (argument.empty() ? "" : " " + argument);
+
+    if (argument.empty()) {
+        // Bare `apollo` returns to the Apollo root, local or remote.
+        pushLine(echo);
+        setCommand(remoteServer && remoteServer->isConnected()
+                       ? "cd ~/APOLLO"
+                       : "cd " + apollo::appRoot().parent_path().string());
+        executeCommand();
+        return true;
+    }
+
+    if (argument == "exit") {
+        pushLine(echo);
+        if (remoteServer && remoteServer->isConnected()) {
+            remoteServer->disconnect();
+            pushLine("Disconnected from remote server.");
+        }
+        quitRequested = true;
+        return true;
+    }
+
+    if (argument == "clear") {
+        scrollback.clear();
+        scrollToBottom();
+        return true;
+    }
+
+    if (argument == "connect") {
+        pushLine(echo);
+        if (!remoteServer) {
+            pushLine("ERROR: RemoteServer not initialized. Check apollo.properties exists.");
+        } else if (remoteServer->connect()) {
+            pushLine(remoteServer->getConnectionStatus());
+            const std::string cdResult = remoteServer->executeRemoteCommand("cd ~/APOLLO 2>&1");
+            if (cdResult.find("APOLLO") != std::string::npos) {
+                pushLine("Remote directory: " + stripCarriageReturn(cdResult));
+            } else {
+                pushLine("Note: ~/APOLLO may not exist on remote server");
+                appendOutputBlock(cdResult);
+            }
+            dirChanged.store(true);
+        } else {
+            pushLine(remoteServer->getConnectionStatus());
+        }
+        return true;
+    }
+
+    if (argument == "disconnect") {
+        pushLine(echo);
+        if (!remoteServer) {
+            pushLine("ERROR: RemoteServer not initialized.");
+        } else if (!remoteServer->isConnected()) {
+            pushLine("ERROR: Not connected to any remote server.");
+        } else {
+            remoteServer->disconnect();
+            pushLine("Disconnected from remote server.");
+            dirChanged.store(true);
+        }
+        return true;
+    }
+
+    if (argument == "p++") {
+        pushLine(echo);
+        filePage++;
+        return true;
+    }
+
+    if (argument == "p--") {
+        pushLine(echo);
+        if (filePage > 1) filePage--;
+        else pushLine("ERROR: No pages to go back");
+        return true;
+    }
+
+    if (argument == "term" || argument == "termk") {
+        pushLine(echo);
+        openTerminalApp();
+        if (argument == "termk") quitRequested = true;
+        return true;
+    }
+
+    if (argument == "save") {
+        pushLine(echo);
+        if (!remoteServer || !remoteServer->isConnected()) {
+            pushLine("ERROR: Not connected to remote server. apollo save only works when connected.");
+            return true;
+        }
+
+        const std::string tempDir = "/tmp/apollo_files";
+        if (!fs::exists(tempDir)) {
+            pushLine("No modified files to upload.");
+            return true;
+        }
+
+        const std::string password = remoteServer->getPassword();
+        const std::string workingDir = remoteServer->getRemoteWorkingDir();
+        std::string filesUploaded;
+        int uploadCount = 0;
+
+        try {
+            for (const auto& entry : fs::directory_iterator(tempDir)) {
+                if (!fs::is_regular_file(entry)) continue;
+                const std::string filename = entry.path().filename().string();
+                const std::string localFile = tempDir + "/" + filename;
+                const std::string remoteFile = workingDir + "/" + filename;
+
+                const std::string scpCmd =
+                    "sshpass -p '" + password + "' scp -P " + remoteServer->getPort() +
+                    " -o StrictHostKeyChecking=no \"" + localFile + "\" '" +
+                    remoteServer->getUser() + "@" + remoteServer->getHost() + ":" + remoteFile + "'";
+
+                if (system(scpCmd.c_str()) == 0) {
+                    if (uploadCount++) filesUploaded += ", ";
+                    filesUploaded += filename;
+                    std::error_code ec;
+                    fs::remove(localFile, ec);
+                    if (ec) pushLine("Warning: Could not delete " + filename + " from cache");
+                } else {
+                    pushLine("ERROR: Failed to upload " + filename);
+                }
+            }
+        } catch (const std::exception& e) {
+            pushLine("ERROR: " + std::string(e.what()));
+            return true;
+        }
+
+        if (uploadCount > 0) {
+            pushLine("Uploaded " + std::to_string(uploadCount) + " file(s): " + filesUploaded);
+        } else {
+            pushLine("No files to upload.");
+        }
+        return true;
+    }
+
+    pushLine(echo);
+    pushLine("Unknown apollo command: " + argument);
+    return true;
 }
 
 void Terminal::executeCommand() {
-    bool clearHistory = false;
-    std::vector<std::string> parts = tokenize(command);
+    const std::vector<std::string> parts = tokenize(command);
     if (parts.empty()) return;
-    std::string commandName = parts[0];
+
+    const std::string& name = parts[0];
     std::string argument;
-    if (parts.size() > 1) {
-        argument.reserve(command.size());
-        for (std::size_t i = 1; i < parts.size(); ++i) {
-            if (i > 1) argument.push_back(' ');
-            argument += parts[i];
-        }
+    for (std::size_t i = 1; i < parts.size(); ++i) {
+        if (i > 1) argument.push_back(' ');
+        argument += parts[i];
     }
-    
-    // apollo base command
-    if (commandName == "apollo") {
+
+    if (runBuiltin(name, argument)) return;
+
+    // `cd` stays synchronous: the GUI reads the working directory every frame,
+    // so it has to be correct before the next draw.
+    if (name == "cd") {
+        pushLine("APOLLO % " + command);
         if (argument.empty()) {
-            // If connected to remote, go to ~/APOLLO; otherwise go to local Apollo dir
-            if (remoteServer && remoteServer->isConnected()) {
-                command = "cd ~/APOLLO";
-                commandName = "cd";
-                argument = "~/APOLLO";
-            } else {
-                command = "cd /Users/you/Apollo";
-                commandName = "cd";
-                argument = "/Users/you/Apollo";
-            }
-        }
-    }
-    
-    if (commandName == "cd") {
-        if (argument.empty()) {
-            std::string msg = "Usage: cd <directory>";
-            std::cout << msg << std::endl;
-            addHistory("APOLLO % " + command);
-            addHistory(msg);
-        } else {
-            // Check if connected to remote - execute remotely
-            if (remoteServer && remoteServer->isConnected()) {
-                std::string result = remoteServer->executeRemoteCommand(command);
-                addHistory("APOLLO % " + command);
-                // Parse result to show directory change or error
-                if (!result.empty()) {
-                    std::istringstream rs(result);
-                    std::string line;
-                    while (std::getline(rs, line)) {
-                        if (!line.empty() && line.back() == '\r') line.pop_back();
-                        if (!line.empty()) addHistory(line);
-                    }
-                }
-            } else {
-                // Local cd
-                if (chdir(argument.c_str()) == 0) {
-                    std::string msg = "Directory changed: " + argument;
-                    std::cout << msg << std::endl;
-                    addHistory("APOLLO % " + command);
-                    addHistory(msg);
-                } else {
-                    std::string err = std::string("cd failed: ") + argument;
-                    perror(("cd failed going to " + argument).c_str());
-                    addHistory("APOLLO % " + command);
-                    addHistory(err);
-                }
-            }
-        }
-        return;
-    }
-    
-    // custom commands later (ex. go back to apollo directory, exit apollo)
-    if (commandName == "apollo") {
-        if (argument == "exit") {
-            // Disconnect from remote first if connected
-            if (remoteServer && remoteServer->isConnected()) {
-                addHistory("APOLLO % " + command);
-                remoteServer->disconnect();
-                addHistory("Disconnected from remote server.");
-            }
-            command = "killall launchApollo";
-        } else if (argument == "clear") {
-            command = "";
-            clearHistory = true;
-        } else if (argument == "connect") {
-            // Connect to the remote server
-            addHistory("APOLLO % " + command);
-            if (!remoteServer) {
-                addHistory("ERROR: RemoteServer not initialized. Check apollo.properties exists.");
-            } else {
-                if (remoteServer->connect()) {
-                    addHistory(remoteServer->getConnectionStatus());
-                    // Change to ~/APOLLO directory on remote server
-                    std::string cdResult = remoteServer->executeRemoteCommand("cd ~/APOLLO 2>&1");
-                    if (cdResult.find("APOLLO") != std::string::npos) {
-                        addHistory("Remote directory: " + cdResult);
-                    } else {
-                        addHistory("Note: ~/APOLLO may not exist on remote server");
-                        addHistory(cdResult);
-                    }
-                } else {
-                    addHistory(remoteServer->getConnectionStatus());
-                }
-            }
-            command = "";
-            return;
-        } else if (argument == "disconnect") {
-            // Disconnect from remote server
-            addHistory("APOLLO % " + command);
-            if (!remoteServer) {
-                addHistory("ERROR: RemoteServer not initialized.");
-            } else if (!remoteServer->isConnected()) {
-                addHistory("ERROR: Not connected to any remote server.");
-            } else {
-                remoteServer->disconnect();
-                addHistory("Disconnected from remote server.");
-            }
-            command = "";
-            return;
-        } else if (argument == "p++") {
-            addHistory("APOLLO % " + command);
-            filePage++;
-            command = "";
-            return;
-        } else if (argument == "p--") {
-            addHistory("APOLLO % " + command);
-            if (filePage > 1) {
-                filePage--;
-            } else {
-                addHistory("ERROR: No pages to go back");
-            }
-            command = "";
-            return;
-        } else if (argument == "term") {
-            // Open terminal - either SSH to remote or open local
-            addHistory("APOLLO % " + command);
-            if (remoteServer && remoteServer->isConnected()) {
-                // Build SSH command with sshpass and navigate to remote working dir
-                std::string host = remoteServer->getHost();
-                std::string user = remoteServer->getUser();
-                std::string password = remoteServer->getPassword();
-                std::string port = remoteServer->getPort();
-                std::string workingDir = remoteServer->getRemoteWorkingDir();
-                
-                // Escape spaces in working directory path
-                auto escapeForShell = [](const std::string& str) -> std::string {
-                    std::string result;
-                    bool isTildePath = !str.empty() && str[0] == '~';
-                    for (char c : str) {
-                        if (c == ' ' && !isTildePath) {
-                            result += '\\';
-                        }
-                        result += c;
-                    }
-                    return result;
-                };
-                
-                bool isTildePath = !workingDir.empty() && workingDir[0] == '~';
-                std::string escapedDir = isTildePath ? workingDir : escapeForShell(workingDir);
-                
-                // Create a temporary script to execute the SSH command
-                std::string tempScript = "/tmp/apollo_ssh_" + std::to_string(getpid()) + ".command";
-                std::ofstream scriptFile(tempScript);
-                scriptFile << "#!/bin/bash\n";
-                scriptFile << "sshpass -p '" << password << "' ssh -o StrictHostKeyChecking=no -p " << port << " " << user << "@" << host << " -t 'cd " << escapedDir << "; exec bash'\n";
-                scriptFile.close();
-                
-                // Make script executable
-                chmod(tempScript.c_str(), 0755);
-                
-                // Open the script in Terminal
-                std::string cmd = "open -a Terminal \"" + tempScript + "\"";
-                system(cmd.c_str());
-            } else {
-                // Local terminal
-                std::filesystem::path currPath = fs::current_path();
-                std::string cmd = "open -a Terminal \"" + currPath.string() + "\"";
-                system(cmd.c_str());
-            }
-            command = "";
-            return;
-        } else if (argument == "termk") {
-            // Open terminal and kill apollo
-            addHistory("APOLLO % " + command);
-            if (remoteServer && remoteServer->isConnected()) {
-                // Build SSH command with sshpass and navigate to remote working dir
-                std::string host = remoteServer->getHost();
-                std::string user = remoteServer->getUser();
-                std::string password = remoteServer->getPassword();
-                std::string port = remoteServer->getPort();
-                std::string workingDir = remoteServer->getRemoteWorkingDir();
-                
-                // Escape spaces in working directory path
-                auto escapeForShell = [](const std::string& str) -> std::string {
-                    std::string result;
-                    bool isTildePath = !str.empty() && str[0] == '~';
-                    for (char c : str) {
-                        if (c == ' ' && !isTildePath) {
-                            result += '\\';
-                        }
-                        result += c;
-                    }
-                    return result;
-                };
-                
-                bool isTildePath = !workingDir.empty() && workingDir[0] == '~';
-                std::string escapedDir = isTildePath ? workingDir : escapeForShell(workingDir);
-                
-                // Create a temporary script to execute the SSH command
-                std::string tempScript = "/tmp/apollo_ssh_" + std::to_string(getpid()) + ".command";
-                std::ofstream scriptFile(tempScript);
-                scriptFile << "#!/bin/bash\n";
-                scriptFile << "sshpass -p '" << password << "' ssh -o StrictHostKeyChecking=no -p " << port << " " << user << "@" << host << " -t 'cd " << escapedDir << "; exec bash'\n";
-                scriptFile.close();
-                
-                // Make script executable
-                chmod(tempScript.c_str(), 0755);
-                
-                // Open the script in Terminal
-                std::string cmd = "open -a Terminal \"" + tempScript + "\"";
-                system(cmd.c_str());
-            } else {
-                // Local terminal
-                std::filesystem::path currPath = fs::current_path();
-                std::string cmd = "open -a Terminal \"" + currPath.string() + "\"";
-                system(cmd.c_str());
-            }
-            // Then kill apollo
-            command = "apollo exit";
-            executeCommand();
-            return;
-        } else if (argument == "save") {
-            // Upload all modified files to remote server
-            addHistory("APOLLO % " + command);
-            if (!remoteServer || !remoteServer->isConnected()) {
-                addHistory("ERROR: Not connected to remote server. apollo save only works when connected.");
-                command = "";
-                return;
-            }
-            
-            std::string host = remoteServer->getHost();
-            std::string user = remoteServer->getUser();
-            std::string password = remoteServer->getPassword();
-            std::string port = remoteServer->getPort();
-            std::string workingDir = remoteServer->getRemoteWorkingDir();
-            
-            std::string tempDir = "/tmp/apollo_files";
-            std::string filesUploaded = "";
-            int uploadCount = 0;
-            
-            // Check if temp directory exists
-            if (!fs::exists(tempDir)) {
-                addHistory("No modified files to upload.");
-                command = "";
-                return;
-            }
-            
-            // Upload all files in temp directory
-            try {
-                for (const auto& entry : fs::directory_iterator(tempDir)) {
-                    if (fs::is_regular_file(entry)) {
-                        std::string filename = entry.path().filename().string();
-                        std::string localFile = tempDir + "/" + filename;
-                        
-                        // Build remote file path without escaping - let SSH handle it
-                        std::string remoteFile = workingDir + "/" + filename;
-                        
-                        // Upload file via SCP with proper quoting
-                        std::string scpCmd = "sshpass -p '" + password + "' scp -P " + port + " -o StrictHostKeyChecking=no \"" + localFile + "\" '" + user + "@" + host + ":" + remoteFile + "'";
-                        int scpResult = system(scpCmd.c_str());
-                        
-                        if (scpResult == 0) {
-                            filesUploaded += filename + ", ";
-                            uploadCount++;
-                            // Delete file after successful upload
-                            try {
-                                fs::remove(localFile);
-                            } catch (const std::exception& e) {
-                                addHistory("Warning: Could not delete " + filename + " from cache");
-                            }
-                        } else {
-                            addHistory("ERROR: Failed to upload " + filename);
-                        }
-                    }
-                }
-            } catch (const std::exception& e) {
-                addHistory("ERROR: " + std::string(e.what()));
-                command = "";
-                return;
-            }
-            
-            if (uploadCount > 0) {
-                // Remove trailing comma and space
-                if (!filesUploaded.empty()) {
-                    filesUploaded = filesUploaded.substr(0, filesUploaded.length() - 2);
-                }
-                addHistory("Uploaded " + std::to_string(uploadCount) + " file(s): " + filesUploaded);
-            } else {
-                addHistory("No files to upload.");
-            }
-            command = "";
-            return;
-        } else {
-            std::string msg = "Unknown apollo command: " + argument;
-            std::cout << msg << std::endl;
-            addHistory("APOLLO % " + command);
-            addHistory(msg);
+            pushLine("Usage: cd <directory>");
             return;
         }
-    }
-    
-    // Handle "open" command for files (local and remote)
-    if (commandName == "open") {
-        if (argument.empty()) {
-            std::string msg = "Usage: open <filename>";
-            std::cout << msg << std::endl;
-            addHistory("APOLLO % " + command);
-            addHistory(msg);
-            return;
-        }
-        
-        addHistory("APOLLO % " + command);
-        
         if (remoteServer && remoteServer->isConnected()) {
-            // Remote file: download via SCP, open in default editor, upload back
-            std::string host = remoteServer->getHost();
-            std::string user = remoteServer->getUser();
-            std::string password = remoteServer->getPassword();
-            std::string port = remoteServer->getPort();
-            std::string workingDir = remoteServer->getRemoteWorkingDir();
-            
-            // Escape spaces in paths for shell
-            auto escapeForShell = [](const std::string& str) -> std::string {
-                std::string result;
-                bool isTildePath = !str.empty() && str[0] == '~';
-                for (char c : str) {
-                    if (c == ' ' && !isTildePath) {
-                        result += '\\';
-                    }
-                    result += c;
-                }
-                return result;
-            };
-            
-            bool isTildePath = !workingDir.empty() && workingDir[0] == '~';
-            std::string escapedDir = isTildePath ? workingDir : escapeForShell(workingDir);
-            std::string escapedFile = escapeForShell(argument);
-            
-            // Create temp directory for downloads
-            std::string tempDir = "/tmp/apollo_files";
-            system("mkdir -p /tmp/apollo_files");
-            
-            std::string localFile = tempDir + "/" + argument;
-            
-            // Check if file already exists in cache
-            if (fs::exists(localFile)) {
-                // File already downloaded, just open it
-                std::string openCmd = "open \"" + localFile + "\"";
-                system(openCmd.c_str());
-                addHistory("File opened from cache: " + argument);
-            } else {
-                // Download file via SCP - use the unescaped path for the remote file
-                // The SSH session will handle the escaping correctly
-                std::string remoteFile = workingDir + "/" + argument;
-                std::string scpSource = user + "@" + host + ":" + remoteFile;
-                
-                // Build SCP command with proper quoting
-                std::string scpCmd = "sshpass -p '" + password + "' scp -P " + port + " -o StrictHostKeyChecking=no '" + user + "@" + host + ":" + remoteFile + "' \"" + localFile + "\"";
-                int scpResult = system(scpCmd.c_str());
-                
-                if (scpResult == 0) {
-                    // File downloaded successfully, open it
-                    std::string openCmd = "open \"" + localFile + "\"";
-                    system(openCmd.c_str());
-                    addHistory("File opened: " + argument);
-                    addHistory("Note: Use 'apollo save' to upload changes when done editing.");
-                } else {
-                    addHistory("ERROR: Failed to download file via SCP");
+            appendOutputBlock(remoteServer->executeRemoteCommand(command));
+        } else {
+            fs::path target = argument;
+            if (!argument.empty() && argument[0] == '~') {
+                if (const char* home = std::getenv("HOME")) {
+                    target = fs::path(home) / argument.substr(argument.size() > 1 ? 2 : 1);
                 }
             }
-        } else {
-            // Local file: open normally
-            std::string openCmd = "open \"" + argument + "\"";
-            system(openCmd.c_str());
-            addHistory("File opened: " + argument);
+            if (chdir(target.c_str()) == 0) {
+                pushLine("Directory changed: " + target.string());
+            } else {
+                pushLine("cd failed: " + target.string());
+            }
         }
-        command = "";
+        dirChanged.store(true);
         return;
     }
-    
-    std::cout << "Executing: " << command << std::endl;
-    
-    // Check if connected to remote server - if so, execute remotely
-    std::string result;
+
+    if (name == "open") {
+        pushLine("APOLLO % " + command);
+        if (argument.empty()) {
+            pushLine("Usage: open <filename>");
+            return;
+        }
+
+        if (remoteServer && remoteServer->isConnected()) {
+            const std::string tempDir = "/tmp/apollo_files";
+            std::error_code ec;
+            fs::create_directories(tempDir, ec);
+            const std::string localFile = tempDir + "/" + argument;
+
+            if (fs::exists(localFile)) {
+                system(("open \"" + localFile + "\"").c_str());
+                pushLine("File opened from cache: " + argument);
+                return;
+            }
+
+            const std::string remoteFile = remoteServer->getRemoteWorkingDir() + "/" + argument;
+            const std::string scpCmd =
+                "sshpass -p '" + remoteServer->getPassword() + "' scp -P " +
+                remoteServer->getPort() + " -o StrictHostKeyChecking=no '" +
+                remoteServer->getUser() + "@" + remoteServer->getHost() + ":" + remoteFile +
+                "' \"" + localFile + "\"";
+
+            if (system(scpCmd.c_str()) == 0) {
+                system(("open \"" + localFile + "\"").c_str());
+                pushLine("File opened: " + argument);
+                pushLine("Note: Use 'apollo save' to upload changes when done editing.");
+            } else {
+                pushLine("ERROR: Failed to download file via SCP");
+            }
+        } else {
+            system(("open \"" + argument + "\"").c_str());
+            pushLine("File opened: " + argument);
+        }
+        return;
+    }
+
+    // Everything else is a pass-through shell command; run it off the render
+    // thread so the window stays interactive and output streams in.
+    pushLine("APOLLO % " + command);
     if (remoteServer && remoteServer->isConnected()) {
-        result = remoteServer->executeRemoteCommand(command);
+        runRemote(command);
     } else {
-        // Execute locally
-        // Make sure stderr is captured too
         std::string execCmd = command;
         if (execCmd.find("2>&1") == std::string::npos) execCmd += " 2>&1";
-        char buffer[256];
-        FILE* pipe = popen(execCmd.c_str(), "r");
-
-        if (!pipe) {
-            addHistory("APOLLO % " + command);
-            addHistory("ERROR: popen() failed");
-            throw std::runtime_error("popen() failed!");
-        }
-        
-        // Read the output line by line (or chunk by chunk)
-        try {
-            while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-                result += buffer;
-            }
-        } catch (...) {
-            pclose(pipe);
-            throw;
-        }
-        
-        // Close the pipe and get the exit status
-        pclose(pipe);
-    }
-    addHistory(std::string("APOLLO % ") + command);
-    std::istringstream rs(result);
-    std::string line;
-    while (std::getline(rs, line)) {
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        addHistory("   "+line);
-    }
-    std::cout << result << std::endl;
-
-    if (clearHistory) {
-        historyCount = 0;
-    } else if (argument == "termk") { // check for apollo kill after termk
-        command = "apollo exit";
-        executeCommand();
+        runAsync(execCmd);
     }
 }
 
@@ -476,20 +654,28 @@ std::vector<std::string> Terminal::tokenize(const std::string& line) {
     bool inQuotes = false;
     char quoteChar = 0;
     for (std::size_t i = 0; i < line.size(); ++i) {
-        char c = line[i];
-        if (c == '\\') {
-            if (i + 1 < line.size()) {
-                cur.push_back(line[i+1]);
-                ++i;
+        const char c = line[i];
+        if (c == '\\' && i + 1 < line.size()) {
+            cur.push_back(line[++i]);
+            continue;
+        }
+        if (c == '"' || c == '\'') {
+            if (!inQuotes) {
+                inQuotes = true;
+                quoteChar = c;
+                continue;
+            }
+            if (c == quoteChar) {
+                inQuotes = false;
+                quoteChar = 0;
                 continue;
             }
         }
-        if ((c == '"' || c == '\'') ) {
-            if (!inQuotes) { inQuotes = true; quoteChar = c; continue; }
-            if (c == quoteChar) { inQuotes = false; quoteChar = 0; continue; }
-        }
         if (std::isspace(static_cast<unsigned char>(c)) && !inQuotes) {
-            if (!cur.empty()) { out.push_back(cur); cur.clear(); }
+            if (!cur.empty()) {
+                out.push_back(cur);
+                cur.clear();
+            }
         } else {
             cur.push_back(c);
         }
@@ -498,61 +684,68 @@ std::vector<std::string> Terminal::tokenize(const std::string& line) {
     return out;
 }
 
-void Terminal::draw(sf::RenderWindow* window) {
-    // box
-    sf::Vector2f boxPos(995.f, 32.f);
-    sf::Vector2f boxSize(500.f, 774.f);
-    sf::RectangleShape terminalView(boxSize);
-    terminalView.setFillColor(sf::Color(18, 18, 18));
-    terminalView.setOutlineThickness(2.f);
-    terminalView.setOutlineColor(sf::Color(36, 36, 36));
-    terminalView.setPosition(boxPos);
-    window->draw(terminalView);
+// ---------------------------------------------------------------------------
+// Autocomplete
+// ---------------------------------------------------------------------------
 
-    // history area inside box (padding)
-    float padX = 18.f;
-    float padY = 18.f;
-    float usableHeight = boxSize.y - 70.f; // leave space for current command line
-    float perLine = static_cast<float>(lineSize) + lineSpacing;
-    int maxLines = static_cast<int>(usableHeight / perLine);
-    if (maxLines < 1) return;
-    int start = historyCount - maxLines;
-    if (start < 0) start = 0;
-    sf::Text lineTxt(font, "", lineSize);
-    float y = boxPos.y + padY;
-    float maxPixelWidth = boxSize.x - 2 * padX;
-    for (int i = start; i < historyCount; ++i) {
-        std::string s = history[i];
-        lineTxt.setString(s);
-        // approximate width control
-        float approxWidth = static_cast<float>(s.size()) * (lineSize * 0.4f);
-        if (approxWidth > maxPixelWidth) {
-            std::size_t keep = static_cast<std::size_t>(maxPixelWidth / (lineSize * 0.4f));
-            if (keep > 3 && keep < s.size()) {
-                s = s.substr(0, keep - 3) + "...";
-                lineTxt.setString(s);
-            }
+void Terminal::autocomplete(std::string& line) {
+    auto parts = tokenize(line);
+    const bool trailingSpace = !line.empty() && std::isspace(static_cast<unsigned char>(line.back()));
+    if (trailingSpace) parts.push_back("");
+    if (parts.size() < 2) return; // command-name completion not supported yet
+
+    const std::string prefix = parts.back();
+
+    fs::path parent;
+    std::string namePrefix = prefix;
+    const fs::path p(prefix);
+    if (p.has_parent_path()) {
+        parent = p.parent_path();
+        namePrefix = p.filename().string();
+    }
+    const fs::path base = fs::current_path();
+    const fs::path dir = parent.empty() ? base : (parent.is_absolute() ? parent : base / parent);
+
+    std::vector<std::string> matches;
+    std::error_code ec;
+    for (auto it = fs::directory_iterator(dir, ec); !ec && it != fs::end(it); it.increment(ec)) {
+        std::string fname = it->path().filename().string();
+        if (fname.rfind(namePrefix, 0) != 0) continue;
+        if (it->is_directory()) fname += "/";
+        matches.push_back(std::move(fname));
+    }
+    if (matches.empty()) return;
+    std::sort(matches.begin(), matches.end());
+
+    // Extend to the longest common prefix, the way a real shell does, instead
+    // of only completing when exactly one candidate matches.
+    std::string common = matches.front();
+    for (const auto& m : matches) {
+        std::size_t i = 0;
+        while (i < common.size() && i < m.size() && common[i] == m[i]) ++i;
+        common.resize(i);
+    }
+
+    if (common.size() > namePrefix.size() || matches.size() == 1) {
+        parts.back() = parent.empty() ? common : (parent / common).string();
+        std::string rebuilt;
+        for (std::size_t i = 0; i < parts.size(); ++i) {
+            if (i) rebuilt.push_back(' ');
+            const std::string& seg = parts[i];
+            if (seg.find(' ') != std::string::npos) rebuilt += '"' + seg + '"';
+            else rebuilt += seg;
         }
-        lineTxt.setPosition(sf::Vector2f(boxPos.x + padX, y));
-        window->draw(lineTxt);
-        y += perLine;
+        line = rebuilt;
+        if (matches.size() == 1) return;
     }
 
-    // current command line
-    sf::Text curr(font, "APOLLO % " + command, lineSize);
-    curr.setPosition(sf::Vector2f(boxPos.x + padX, boxPos.y + boxSize.y - 48.f));
-    window->draw(curr);
+    pushLine("APOLLO % " + line);
+    for (const auto& m : matches) pushLine("   " + m);
 }
 
-void Terminal::addHistory(std::string input) {
-    if (input.empty()) return;
-    if (historyCount < static_cast<int>(history.size())) {
-        history[historyCount++] = input;
-    } else {
-        for (std::size_t i = 1; i < history.size(); ++i) history[i-1] = history[i];
-        history.back() = input;
-    }
-}
+// ---------------------------------------------------------------------------
+// Remote helpers
+// ---------------------------------------------------------------------------
 
 bool Terminal::isRemoteConnected() const {
     return remoteServer && remoteServer->isConnected();
@@ -564,87 +757,123 @@ RemoteServer* Terminal::getRemoteServer() const {
 
 std::vector<std::pair<std::string, bool>> Terminal::getRemoteDirectoryListing() {
     std::vector<std::pair<std::string, bool>> result;
-    if (!remoteServer || !remoteServer->isConnected()) {
-        return result;
-    }
-    
-    // Use ls -1F to list files with type indicators
-    std::string lsOutput = remoteServer->executeRemoteCommand("ls -1F");
-    std::istringstream stream(lsOutput);
+    if (!isRemoteConnected()) return result;
+
+    std::istringstream stream(remoteServer->executeRemoteCommand("ls -1F"));
     std::string line;
-    
     while (std::getline(stream, line)) {
+        line = stripCarriageReturn(line);
         if (line.empty()) continue;
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        
+
         bool isDirectory = false;
-        if (!line.empty() && line.back() == '/') {
+        const char tail = line.back();
+        if (tail == '/') {
             isDirectory = true;
-            line.pop_back(); // Remove trailing /
-        } else if (!line.empty() && (line.back() == '*' || line.back() == '@' || line.back() == '=' || line.back() == '|')) {
-            line.pop_back(); // Remove type indicator
+            line.pop_back();
+        } else if (tail == '*' || tail == '@' || tail == '=' || tail == '|') {
+            line.pop_back();
         }
-        
-        if (!line.empty()) {
-            result.push_back({line, isDirectory});
-        }
+        if (!line.empty()) result.emplace_back(line, isDirectory);
     }
-    
     return result;
 }
 
-void Terminal::autocomplete(std::string& line) {
-    // Tokenize and determine last arg to complete
-    auto parts = tokenize(line);
-    if (parts.empty()) return;
-    // Only complete arguments (not the command word)
-    if (parts.size() < 2) return;
-    std::string prefix = parts.back();
+// ---------------------------------------------------------------------------
+// Drawing
+// ---------------------------------------------------------------------------
 
-    // Resolve search directory and prefix name
-    fs::path base = fs::current_path();
-    fs::path parent;
-    std::string namePrefix = prefix;
-    fs::path p(prefix);
-    if (p.has_parent_path()) {
-        parent = p.parent_path();
-        namePrefix = p.filename().string();
+std::size_t Terminal::columns() const {
+    const float usable = boxSize.x - 2.f * padX;
+    const auto cols = static_cast<std::size_t>(usable / glyphAdvance);
+    return cols < 8 ? 8 : cols;
+}
+
+std::vector<std::string> Terminal::wrap(const std::string& s, std::size_t cols) const {
+    std::vector<std::string> out;
+    if (s.empty()) {
+        out.emplace_back();
+        return out;
     }
-    fs::path dir = parent.empty() ? base : (parent.is_absolute() ? parent : base / parent);
-
-    std::vector<std::string> matches;
-    std::error_code ec;
-    for (auto it = fs::directory_iterator(dir, ec); !ec && it != fs::end(it); it.increment(ec)) {
-        const auto& entry = *it;
-        std::string fname = entry.path().filename().string();
-        if (fname.rfind(namePrefix, 0) == 0) {
-            if (entry.is_directory()) fname += "/";
-            matches.push_back(fname);
-        }
+    for (std::size_t i = 0; i < s.size(); i += cols) {
+        out.push_back(s.substr(i, cols));
     }
-    if (matches.empty()) return;
+    return out;
+}
 
-    if (matches.size() == 1) {
-        // Replace last part and rebuild string
-        parts.back() = matches.front();
-        std::string rebuilt;
-        rebuilt.reserve(line.size() + 32);
-        for (size_t i = 0; i < parts.size(); ++i) {
-            if (i) rebuilt.push_back(' ');
-            const std::string& seg = parts[i];
-            if (seg.find(' ') != std::string::npos) {
-                rebuilt.push_back('"');
-                rebuilt += seg;
-                rebuilt.push_back('"');
-            } else {
-                rebuilt += seg;
+void Terminal::draw(sf::RenderWindow* window) {
+    sf::RectangleShape terminalView(boxSize);
+    terminalView.setFillColor(sf::Color(18, 18, 18));
+    terminalView.setOutlineThickness(2.f);
+    terminalView.setOutlineColor(sf::Color(36, 36, 36));
+    terminalView.setPosition(boxPos);
+    window->draw(terminalView);
+
+    const float perLine = static_cast<float>(lineSize) + lineSpacing;
+    const float usableHeight = boxSize.y - 2.f * padY - perLine - 8.f; // reserve the prompt row
+    const int maxLines = static_cast<int>(usableHeight / perLine);
+    if (maxLines < 1) return;
+
+    const std::size_t cols = columns();
+
+    // Wrap backwards from the newest line until the viewport is full. Only the
+    // visible tail is ever laid out, so scrollback depth costs nothing to draw.
+    std::vector<std::string> view;
+    view.reserve(static_cast<std::size_t>(maxLines));
+    int toSkip = scrollOffset;
+    for (auto it = scrollback.rbegin(); it != scrollback.rend(); ++it) {
+        std::vector<std::string> wrapped = wrap(*it, cols);
+        for (auto w = wrapped.rbegin(); w != wrapped.rend(); ++w) {
+            if (toSkip > 0) {
+                --toSkip;
+                continue;
             }
+            view.push_back(*w);
+            if (view.size() >= static_cast<std::size_t>(maxLines)) break;
         }
-        line = rebuilt;
-        return;
+        if (view.size() >= static_cast<std::size_t>(maxLines)) break;
     }
 
-    // Multiple candidates: print to history and do not modify input
-    addHistory("APOLLO % " + line);
-    for (auto& m : matches) addHistory(m);
+    sf::Text lineTxt(monoFont, "", lineSize);
+    lineTxt.setFillColor(sf::Color(210, 210, 210));
+    float y = boxPos.y + padY;
+    for (auto it = view.rbegin(); it != view.rend(); ++it) {
+        lineTxt.setString(*it);
+        lineTxt.setPosition({boxPos.x + padX, std::round(y)});
+        window->draw(lineTxt);
+        y += perLine;
+    }
+
+    // --- prompt row -------------------------------------------------------
+    const std::string prompt = isBusy() ? "APOLLO ⋯ " : "APOLLO % ";
+    const float promptY = boxPos.y + boxSize.y - padY - perLine;
+
+    // Horizontal scroll keeps the caret on screen on very long lines.
+    const std::size_t inputCols = cols > prompt.size() ? cols - prompt.size() : 1;
+    std::size_t viewStart = 0;
+    if (cursor >= inputCols) viewStart = cursor - inputCols + 1;
+    const std::string visible = command.substr(viewStart, inputCols);
+
+    sf::Text promptTxt(monoFont, prompt + visible, lineSize);
+    promptTxt.setFillColor(sf::Color(235, 235, 180));
+    promptTxt.setPosition({boxPos.x + padX, std::round(promptY)});
+    window->draw(promptTxt);
+
+    if (!isBusy() && cursorBlink.getElapsedTime().asSeconds() < 0.5f) {
+        sf::RectangleShape caret({2.f, static_cast<float>(lineSize)});
+        caret.setFillColor(sf::Color(235, 235, 180));
+        const float caretX =
+            boxPos.x + padX + (static_cast<float>(prompt.size() + (cursor - viewStart)) * glyphAdvance);
+        caret.setPosition({std::round(caretX), std::round(promptY + 3.f)});
+        window->draw(caret);
+    } else if (cursorBlink.getElapsedTime().asSeconds() > 1.f) {
+        cursorBlink.restart();
+    }
+
+    // Scroll indicator so it is obvious you are not looking at the live tail.
+    if (scrollOffset > 0) {
+        sf::Text marker(monoFont, "-- scrolled " + std::to_string(scrollOffset) + " lines --", 12);
+        marker.setFillColor(sf::Color(120, 120, 120));
+        marker.setPosition({boxPos.x + padX, std::round(promptY - perLine)});
+        window->draw(marker);
+    }
 }

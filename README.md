@@ -34,7 +34,27 @@ remote host when connected).
 - `open <file>` — open a file locally, or fetch it over SCP and open it
 - `cd <dir>` — change directory (mirrored in the GUI)
 
-Tab autocompletes path arguments.
+Tab completes path arguments to the longest common prefix, and lists the
+candidates when more than one matches.
+
+## Terminal keys
+
+| Key | Action |
+| --- | --- |
+| `←` / `→` | Move the cursor |
+| `Opt+←` / `Opt+→` | Move by word |
+| `Home` / `End`, `Ctrl+A` / `Ctrl+E` | Start / end of line |
+| `↑` / `↓` | Previous / next command in history |
+| `Ctrl+K` / `Ctrl+U` | Delete to end / start of line |
+| `Ctrl+W` | Delete the previous word |
+| `Ctrl+C` | Cancel the running command, or clear the line |
+| `Ctrl+L` | Clear the scrollback |
+| `Ctrl+D` | Quit (on an empty line) |
+| Scroll wheel, `PgUp` / `PgDn` | Scroll the scrollback (10k lines) |
+| `Tab` | Complete a path |
+
+Long-running commands stream their output as it arrives and never block the
+window — the prompt shows `APOLLO ⋯` while one is in flight.
 
 ## Configuration
 
@@ -50,7 +70,12 @@ git-ignored — **do not commit real credentials**.
 Requires SFML 3 (`brew install sfml`).
 
 ```bash
-./compile.sh
+make -j8 && make install
 ```
 
-Installs to `/usr/local/bin/launchApollo`.
+`make run` builds and launches in place. `./compile.sh` still works and just
+calls the Makefile.
+
+Assets are located via `$APOLLO_HOME`, then by walking up from the executable,
+then via the path baked in at compile time. Set `APOLLO_HOME` if you install the
+binary outside the source tree and later move that tree.

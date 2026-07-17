@@ -7,7 +7,8 @@
 class RemoteServer {
 public:
     RemoteServer(const std::string& configFilePath);
-    
+    ~RemoteServer();
+
     bool connect();
     void disconnect();
     bool isConnected() const;
@@ -18,18 +19,21 @@ public:
     std::string getPassword() const;
     std::string getPort() const;
     std::string executeRemoteCommand(const std::string& command);
-    
+
 private:
     std::string host;
     std::string user;
     std::string password;
+    std::string keyPath;
     std::string port;
     bool connected;
     std::string statusMessage;
-    std::string remoteWorkingDir;  // Track remote current directory
-    
+    std::string remoteWorkingDir; // tracked remote cwd
+    std::string controlPath;      // ssh ControlMaster socket
+
     void loadConfigFromProperties(const std::string& configFilePath);
     std::string buildSSHCommand() const;
+    void closeControlMaster() const;
 };
 
 #endif // REMOTE_SERVER_H

@@ -1,85 +1,106 @@
 #include "System.h"
 
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <string>
-#include <filesystem>
 #include <vector>
-#include <SFML/Graphics.hpp>
-#include <chrono>
-#include <thread>
-#include <ctime>
-#include <string>
+
+#include "AppPaths.h"
 #include "PropertiesParser.h"
 
 namespace fs = std::filesystem;
 
-System::System() :
-bootScreen(true),
-bootStep(Initial),
-folderCount(0),
-fileCount(0),
-userAction(' '),
-apolloTexture("/Users/you/Apollo/apollo_project/assets/ApolloHead.png"),
-apolloHead(apolloTexture),
-columnTexture("/Users/you/Apollo/apollo_project/assets/column.png"),
-columnSprite(columnTexture),
-title(terminal.font, "", 100),
-folderTexture("/Users/you/Apollo/apollo_project/assets/folder.png"),
-folderSprite(folderTexture)
-{
-    rootDir = std::filesystem::current_path();
+System::System()
+    : userAction(' '),
+      apolloTexture(apollo::assetPath("ApolloHead.png")),
+      apolloHead(apolloTexture),
+      columnTexture(apollo::assetPath("column.png")),
+      columnSprite(columnTexture),
+      folderTexture(apollo::assetPath("folder.png")),
+      folderSprite(folderTexture),
+      title(terminal.font, "", 100),
+      bootScreen(true),
+      folderCount(0),
+      fileCount(0),
+      listingDirty(true),
+      bootStep(Initial) {
+    rootDir = fs::current_path();
     apolloHead.setColor(sf::Color(255, 255, 255, 0));
     apolloHead.setTexture(apolloTexture, true);
 }
 
-void System::update() {
-    if (bootScreen) {
-        // Boot animation timing handled in checkBoot() called from display()
-    } else {
-        long current_time = static_cast<long>(std::time(nullptr));
+void System::requestRefresh() {
+    listingDirty = true;
+}
 
-        if ((current_time-last_run_time) > 1) {
-            folderCount = 0;
-            fileCount = 0;
-            last_run_time = current_time;
-            
-            // Check if connected to remote server
-            if (terminal.isRemoteConnected()) {
-                // Get remote directory listing
-                auto remoteListing = terminal.getRemoteDirectoryListing();
-                for (const auto& item : remoteListing) {
-                    if (item.second) { // is directory
-                        folders[folderCount++] = item.first;
-                    } else { // is file
-                        files[fileCount++] = item.first;
-                    }
-                }
+void System::refreshListing() {
+    folderCount = 0;
+    fileCount = 0;
+
+    if (terminal.isRemoteConnected()) {
+        for (const auto& item : terminal.getRemoteDirectoryListing()) {
+            if (item.second) {
+                if (folderCount < static_cast<int>(kMaxEntries)) folders[folderCount++] = item.first;
             } else {
-                // Local directory listing
-                currDir = fs::current_path();
-                std::vector<std::string> folderNames;
-                std::vector<std::string> fileNames;
-                
-                // Iterate through the directory entries
-                for (const auto& entry : fs::directory_iterator(currDir)) {
-                    if (fs::is_regular_file(entry)) {
-                        fileNames.push_back(entry.path().filename().string());
-                    } else {
-                        folderNames.push_back(entry.path().filename().string());
-                    }
-                }
-                
-                // Set file names to proper locations
-                for (const std::string& filename : folderNames) {
-                    folders[folderCount] = filename;
-                    folderCount++;
-                }
-                for (const std::string& filename : fileNames) {
-                    files[fileCount] = filename;
-                    fileCount++;
-                }
+                if (fileCount < static_cast<int>(kMaxEntries)) files[fileCount++] = item.first;
             }
         }
+        return;
+    }
+
+    std::error_code ec;
+    currDir = fs::current_path(ec);
+    if (ec) return;
+
+    std::vector<std::string> folderNames;
+    std::vector<std::string> fileNames;
+    for (auto it = fs::directory_iterator(currDir, ec); !ec && it != fs::end(it); it.increment(ec)) {
+        if (fs::is_regular_file(it->status())) fileNames.push_back(it->path().filename().string());
+        else folderNames.push_back(it->path().filename().string());
+    }
+
+    // Stable alphabetical order; directory_iterator makes no ordering promise,
+    // so without this the grid reshuffles on every refresh.
+    std::sort(folderNames.begin(), folderNames.end());
+    std::sort(fileNames.begin(), fileNames.end());
+
+    for (const auto& name : folderNames) {
+        if (folderCount >= static_cast<int>(kMaxEntries)) break;
+        folders[folderCount++] = name;
+    }
+    for (const auto& name : fileNames) {
+        if (fileCount >= static_cast<int>(kMaxEntries)) break;
+        files[fileCount++] = name;
+    }
+
+    lastWriteTime = fs::last_write_time(currDir, ec);
+}
+
+void System::update() {
+    // Hand the render thread whatever the command worker produced this frame.
+    terminal.pump();
+
+    if (bootScreen) return;
+
+    if (terminal.consumeDirectoryChanged()) listingDirty = true;
+
+    // Locally, a directory mtime check twice a second is far cheaper than a
+    // full re-read, and it catches changes made outside Apollo.
+    if (!listingDirty && !terminal.isRemoteConnected() &&
+        mtimeClock.getElapsedTime().asSeconds() >= 0.5f) {
+        mtimeClock.restart();
+        std::error_code ec;
+        const fs::path here = fs::current_path(ec);
+        if (!ec) {
+            const auto stamp = fs::last_write_time(here, ec);
+            if (!ec && (here != currDir || stamp != lastWriteTime)) listingDirty = true;
+        }
+    }
+
+    if (listingDirty) {
+        refreshListing();
+        listingDirty = false;
     }
 }
 
@@ -87,16 +108,24 @@ void System::setUserAction(char input) {
     userAction = input;
 }
 
+void System::drawColumns(sf::RenderWindow* window) {
+    columnSprite.setScale({1.75f, 1.75f});
+    columnSprite.setPosition({200.f, 200.f});
+    window->draw(columnSprite);
+    columnSprite.setPosition({75.f, 200.f});
+    window->draw(columnSprite);
+    columnSprite.setScale({-1.75f, 1.75f});
+    columnSprite.setPosition({1300.f, 200.f});
+    window->draw(columnSprite);
+    columnSprite.setPosition({1425.f, 200.f});
+    window->draw(columnSprite);
+}
+
 void System::checkBoot(sf::RenderWindow* window) {
-    sf::Text password(terminal.font, "", 40);
     apolloHead.setScale({1.6f, 1.6f});
     apolloTexture.setSmooth(false);
     columnTexture.setSmooth(false);
-    sf::Vector2f pos(525.f, 350.f);
-    pos.x = std::round(pos.x);
-    pos.y = std::round(pos.y);
-    apolloHead.setPosition(pos);
-    
+
     switch (bootStep) {
         case Initial: {
             if (!bootTitleDone) {
@@ -104,7 +133,8 @@ void System::checkBoot(sf::RenderWindow* window) {
                     if (bootTitleTimer.getElapsedTime().asSeconds() >= bootTitleDelay) {
                         ++bootTitleVisibleChars;
                         bootTitleTimer.restart();
-                        apolloHead.setColor(sf::Color(255, 255, 255, (42*bootTitleVisibleChars)));
+                        apolloHead.setColor(
+                            sf::Color(255, 255, 255, static_cast<std::uint8_t>(42 * bootTitleVisibleChars)));
                     }
                 } else {
                     apolloHead.setColor(sf::Color(255, 255, 255, 255));
@@ -114,112 +144,80 @@ void System::checkBoot(sf::RenderWindow* window) {
                     }
                 }
             }
+            apolloHead.setPosition({525.f, 350.f});
+            title.setCharacterSize(100);
             title.setFillColor(sf::Color::White);
-            title.setPosition(sf::Vector2f(580.f, 180.f));
+            title.setPosition({580.f, 180.f});
             title.setString(bootTitleFull.substr(0, bootTitleVisibleChars));
             window->draw(title);
             window->draw(apolloHead);
-            // Draw columns
-            columnSprite.setScale({1.75f, 1.75f});
-            columnSprite.setPosition(sf::Vector2f(200.f, 200.f));
-            window->draw(columnSprite);
-            columnSprite.setPosition(sf::Vector2f(75.f, 200.f));
-            window->draw(columnSprite);
-            columnSprite.setScale({-1.75f, 1.75f});
-            columnSprite.setPosition(sf::Vector2f(1300.f, 200.f));
-            window->draw(columnSprite);
-            columnSprite.setPosition(sf::Vector2f(1425.f, 200.f));
-            window->draw(columnSprite);
-            
-            break; }
+            drawColumns(window);
+            break;
+        }
+
         case Password: {
-            // Still display the title
+            title.setCharacterSize(100);
             title.setFillColor(sf::Color::White);
-            title.setPosition(sf::Vector2f(580.f, 160.f));
+            title.setPosition({580.f, 160.f});
             title.setString(bootTitleFull);
             window->draw(title);
-            sf::Vector2f pos(525.f, 310.f);
-            pos.x = std::round(pos.x);
-            pos.y = std::round(pos.y);
-            apolloHead.setPosition(pos);
+
+            apolloHead.setPosition({525.f, 310.f});
             window->draw(apolloHead);
-            columnSprite.setScale({1.75f, 1.75f});
-            columnSprite.setPosition(sf::Vector2f(200.f, 200.f));
-            window->draw(columnSprite);
-            columnSprite.setPosition(sf::Vector2f(75.f, 200.f));
-            window->draw(columnSprite);
-            columnSprite.setScale({-1.75f, 1.75f});
-            columnSprite.setPosition(sf::Vector2f(1300.f, 200.f));
-            window->draw(columnSprite);
-            columnSprite.setPosition(sf::Vector2f(1425.f, 200.f));
-            window->draw(columnSprite);
-            
-            // Create masked password
-            std::string masked_password(input.length(), '*');
+            drawColumns(window);
+
+            sf::Text password(terminal.font, "Password: " + std::string(input.length(), '*'), 40);
             password.setFillColor(sf::Color::White);
-            password.setPosition(sf::Vector2f(530.f, 650.f));
-            password.setString("Password: " + masked_password);
+            password.setPosition({530.f, 650.f});
             window->draw(password);
-            
-            
-            // onSubmit
+
             if (userAction == 'S') {
-                // Grab the props
-                PropertiesParser props("/Users/you/Apollo/apollo_project/apollo.properties");
-                
-                if (input == props.getProperty("apollo.password", "")) { // PASSWORD FOR THE SYSTEM
+                PropertiesParser props(apollo::configPath().string());
+                if (input == props.getProperty("apollo.password", "")) {
                     bootStep = Anim;
                 }
                 userAction = ' ';
             }
-            break; }
+            break;
+        }
+
         case Anim:
-            // Anim break
-            
-            
-            // Then exit
             bootStep = Exit;
             break;
+
         case Exit:
-            // Reached explicit exit state; mark finished
             bootStep = Finished;
             break;
+
         case Finished:
             bootScreen = false;
+            listingDirty = true;
             break;
     }
 }
 
 void System::setRootDir(std::string path) {
-    // Assign to member rootDir (avoid shadowing with a new local variable)
     rootDir = path;
-    
-    // sert current to root
     currDir = rootDir;
-    
-    terminal.setCommand("cd " +currDir.string());
+
+    terminal.setCommand("cd " + currDir.string());
     terminal.executeCommand();
     terminal.setCommand("");
 }
 
 bool System::isRoot() {
-    // If connected to remote, check if at ~/APOLLO or the expanded form
     if (terminal.isRemoteConnected()) {
-        RemoteServer* remote = terminal.getRemoteServer();
-        if (remote) {
-            std::string workingDir = remote->getRemoteWorkingDir();
-            // Check if we're at ~/APOLLO or the actual expanded path containing APOLLO
-            return workingDir == "~/APOLLO" || 
-                   (workingDir.find("/APOLLO") != std::string::npos && 
-                    workingDir.find("/APOLLO") == workingDir.length() - 7);
+        if (RemoteServer* remote = terminal.getRemoteServer()) {
+            const std::string workingDir = remote->getRemoteWorkingDir();
+            return workingDir == "~/APOLLO" ||
+                   (workingDir.size() >= 7 && workingDir.compare(workingDir.size() - 7, 7, "/APOLLO") == 0);
         }
     }
-    // Otherwise check local filesystem
-    return (rootDir == currDir);
+    return rootDir == currDir;
 }
 
 int System::getItemCount() {
-    return (folderCount+fileCount);
+    return folderCount + fileCount;
 }
 
 bool System::isBooting() {
@@ -227,271 +225,158 @@ bool System::isBooting() {
 }
 
 void System::setInput(std::string inString) {
-    input = inString;
+    input = std::move(inString);
 }
 
 void System::executeClick(int locationX, int locationY) {
-    // Check if rootView
     if (isRoot()) {
-        int onFolder = (locationY*6)+locationX; // the folder to cd into
-        
+        const int onFolder = (locationY * 6) + locationX;
         if (onFolder < folderCount) {
-            terminal.setCommand("cd "+folders[onFolder]);
+            terminal.setCommand("cd " + folders[onFolder]);
             terminal.executeCommand();
             terminal.setCommand("");
         }
-    } else {
-        std::string fileString = "";
-        int filePage = terminal.filePage;
-        int box = locationY;
-        bool isDirectory = false;
-        
-        if (box+(16*(filePage-1)) < folderCount) {
-            fileString = folders[box+(16*(filePage-1))];
-            isDirectory = true; // folders array contains only directories
-        } else if (box+(16*(filePage-1))-folderCount < fileCount) {
-            fileString = files[box+(16*(filePage-1))-folderCount];
-            isDirectory = false;
-        }
-        
-        if (fileString != "") {
-            if (isDirectory) {
-                terminal.setCommand("cd "+fileString);
-                terminal.executeCommand();
-                terminal.setCommand("");
-            } else {
-                // For files, use appropriate open command
-                if (terminal.isRemoteConnected()) {
-                    // Remote file: use scp to download, open in local editor, then upload back
-                    terminal.setCommand("open "+fileString);
-                    terminal.executeCommand();
-                    terminal.setCommand("");
-                } else {
-                    // Local file: open normally
-                    terminal.setCommand("open "+fileString);
-                    terminal.executeCommand();
-                    terminal.setCommand("");
-                }
-            }
-        }
+        return;
+    }
+
+    const int index = locationY + (16 * (terminal.filePage - 1));
+    std::string target;
+    bool isDirectory = false;
+
+    if (index < folderCount) {
+        target = folders[index];
+        isDirectory = true;
+    } else if (index - folderCount < fileCount) {
+        target = files[index - folderCount];
+    }
+
+    if (target.empty()) return;
+
+    terminal.setCommand((isDirectory ? "cd " : "open ") + target);
+    terminal.executeCommand();
+    terminal.setCommand("");
+}
+
+void System::drawChrome(sf::RenderWindow* window) {
+    const sf::Vector2f boxPos(20.f, 32.f);
+    const sf::Vector2f boxSize(955.f, 774.f);
+
+    sf::RectangleShape apolloView(boxSize);
+    apolloView.setFillColor(sf::Color(18, 18, 18));
+    apolloView.setOutlineThickness(2.f);
+    apolloView.setOutlineColor(sf::Color(36, 36, 36));
+    apolloView.setPosition(boxPos);
+    window->draw(apolloView);
+
+    title.setCharacterSize(65);
+    title.setFillColor(sf::Color::White);
+    title.setString(bootTitleFull);
+
+    const sf::FloatRect titleBounds = title.getLocalBounds();
+    const float titleX = (boxSize.x - titleBounds.size.x) / 2.0f + boxPos.x;
+    title.setPosition({titleX, 40.f});
+    window->draw(title);
+
+    if (terminal.isRemoteConnected()) {
+        sf::Text remoteIndicator(terminal.font, "[REMOTE]", 35);
+        remoteIndicator.setFillColor(sf::Color(255, 140, 0));
+        remoteIndicator.setPosition({titleX + titleBounds.size.x + 10.f, 55.f});
+        window->draw(remoteIndicator);
     }
 }
 
 void System::display(sf::RenderWindow* window) {
-    // use window to display stuff
     if (bootScreen) {
         checkBoot(window);
+        return;
     }
-    else if (isRoot()) {
-        // Draw Apollo Box
-        sf::Vector2f boxPos(20.f, 32.f);
-        sf::Vector2f boxSize(955.f, 774.f);
-        sf::RectangleShape apolloView(boxSize);
-        apolloView.setFillColor(sf::Color(18, 18, 18));
-        apolloView.setOutlineThickness(2.f);
-        apolloView.setOutlineColor(sf::Color(36, 36, 36));
-        apolloView.setPosition(boxPos);
-        window->draw(apolloView);
-        
-        // Draw background
-        
-        // Title with remote indicator
-        title.setCharacterSize(65);
-        title.setFillColor(sf::Color::White);
-        title.setString(bootTitleFull);
-        
-        // Center title based on its width
-        sf::FloatRect titleBounds = title.getLocalBounds();
-        float titleX = (boxSize.x - titleBounds.size.x) / 2.0f + boxPos.x;
-        title.setPosition(sf::Vector2f(titleX, 40.f));
-        window->draw(title);
-        
-        // Draw [REMOTE] indicator separately in smaller orange text
-        if (terminal.isRemoteConnected()) {
-            sf::Text remoteIndicator(terminal.font, "[REMOTE]", 35);
-            remoteIndicator.setFillColor(sf::Color(255, 140, 0)); // Orange
-            sf::FloatRect indicatorBounds = remoteIndicator.getLocalBounds();
-            float indicatorX = titleX + titleBounds.size.x + 10.f;
-            remoteIndicator.setPosition(sf::Vector2f(indicatorX, 55.f));
-            window->draw(remoteIndicator);
-        }
-        
-        // Draw Folders
-        // - start with hitboxes
-        sf::Vector2f folderBoxSize(120.f, 120.f);
-        sf::RectangleShape folderBox(folderBoxSize);
+
+    drawChrome(window);
+
+    if (isRoot()) {
+        sf::RectangleShape folderBox({120.f, 120.f});
         folderBox.setFillColor(sf::Color(20, 20, 20));
         folderBox.setOutlineThickness(2.f);
         folderBox.setOutlineColor(sf::Color(36, 36, 36));
-        // - draw text and file icon
+
         sf::Text folderName(terminal.font);
         folderName.setFillColor(sf::Color::White);
         folderName.setCharacterSize(14);
-        
-        sf::FloatRect folderSpriteRect = folderSprite.getLocalBounds();
-        folderSprite.setOrigin(sf::Vector2f(
-            folderSpriteRect.position.x + folderSpriteRect.size.x / 2.0f,
-            folderSpriteRect.position.y + folderSpriteRect.size.y / 2.0f
-        ));
+
+        const sf::FloatRect spriteRect = folderSprite.getLocalBounds();
+        folderSprite.setOrigin({spriteRect.position.x + spriteRect.size.x / 2.0f,
+                                spriteRect.position.y + spriteRect.size.y / 2.0f});
         folderSprite.setScale({1.75f, 1.75f});
-        
+
         for (int row = 0; row < 4; row++) {
             for (int col = 0; col < 6; col++) {
-                // define folder number tracker
-                int onFolder = (row*6)+col;
-                
-                if (folderCount > onFolder) {
-                    folderBox.setPosition(sf::Vector2f((70.f+140.f*col+5.f*col),(230.f+135.f*row)));
-                    window->draw(folderBox);
-                    
-                    folderSprite.setPosition(sf::Vector2f((132.5f+140.f*col+5.f*col),(285.f+135.f*row)));
-                    window->draw(folderSprite);
-                    
-                    folderName.setString(folders[onFolder]);
-                    sf::FloatRect folderRect = folderName.getLocalBounds();
-                    sf::Vector2f origin(
-                        folderRect.position.x + folderRect.size.x / 2.0f,
-                        folderRect.position.y + folderRect.size.y / 2.0f
-                    );
+                const int onFolder = (row * 6) + col;
+                if (folderCount <= onFolder) continue;
 
-                    // Snap origin to integer pixels too
-                    origin.x = std::round(origin.x);
-                    origin.y = std::round(origin.y);
-                    folderName.setOrigin(origin);
-                    
-                    // Center it normally
-                    sf::Vector2f pos((130.f + 140.f * col + 5.f * col), (335.f + 135.f * row));
+                folderBox.setPosition({70.f + 145.f * col, 230.f + 135.f * row});
+                window->draw(folderBox);
 
-                    // Snap to pixel grid
-                    pos.x = std::round(pos.x);
-                    pos.y = std::round(pos.y);
+                folderSprite.setPosition({132.5f + 145.f * col, 285.f + 135.f * row});
+                window->draw(folderSprite);
 
-                    folderName.setPosition(pos);
-                    window->draw(folderName);
-                }
+                folderName.setString(folders[onFolder]);
+                const sf::FloatRect rect = folderName.getLocalBounds();
+                folderName.setOrigin({std::round(rect.position.x + rect.size.x / 2.0f),
+                                      std::round(rect.position.y + rect.size.y / 2.0f)});
+                folderName.setPosition({std::round(130.f + 145.f * col), std::round(335.f + 135.f * row)});
+                window->draw(folderName);
             }
         }
-        
-        // draw the terminal
-        terminal.draw(window);
     } else {
-        // Draw Apollo Box
-        sf::Vector2f boxPos(20.f, 32.f);
-        sf::Vector2f boxSize(955.f, 774.f);
-        sf::RectangleShape apolloView(boxSize);
-        apolloView.setFillColor(sf::Color(18, 18, 18));
-        apolloView.setOutlineThickness(2.f);
-        apolloView.setOutlineColor(sf::Color(36, 36, 36));
-        apolloView.setPosition(boxPos);
-        window->draw(apolloView);
-        // Draw background
-        // Title with remote indicator
-        title.setCharacterSize(65);
-        title.setFillColor(sf::Color::White);
-        title.setString(bootTitleFull);
-        
-        // Center title based on its width
-        sf::FloatRect titleBounds = title.getLocalBounds();
-        float titleX = (boxSize.x - titleBounds.size.x) / 2.0f + boxPos.x;
-        title.setPosition(sf::Vector2f(titleX, 40.f));
-        window->draw(title);
-        
-        // Draw [REMOTE] indicator separately in smaller orange text
-        if (terminal.isRemoteConnected()) {
-            sf::Text remoteIndicator(terminal.font, "[REMOTE]", 35);
-            remoteIndicator.setFillColor(sf::Color(255, 140, 0)); // Orange
-            sf::FloatRect indicatorBounds = remoteIndicator.getLocalBounds();
-            float indicatorX = titleX + titleBounds.size.x + 10.f;
-            remoteIndicator.setPosition(sf::Vector2f(indicatorX, 55.f));
-            window->draw(remoteIndicator);
-        }
-        // Draw files
-        sf::Vector2f fileBoxSize(875.f, 32.f);
-        sf::RectangleShape fileBox(fileBoxSize);
+        sf::RectangleShape fileBox({875.f, 32.f});
         fileBox.setFillColor(sf::Color(20, 20, 20));
         fileBox.setOutlineThickness(2.f);
         fileBox.setOutlineColor(sf::Color(36, 36, 36));
-        
-        sf::FloatRect fileRect = fileBox.getLocalBounds();
-        sf::Vector2f origin(
-            fileRect.position.x + fileRect.size.x / 2.0f,
-            fileRect.position.y + fileRect.size.y / 2.0f
-        );
-        
+
         sf::Text fileName(terminal.font);
-        fileName.setFillColor(sf::Color::White);
         fileName.setCharacterSize(20);
-        
-        sf::Text pageString(terminal.font);
-        pageString.setFillColor(sf::Color::White);
-        pageString.setCharacterSize(18);
-        
-        // Repeat over files shown
+
+        const int filePage = terminal.filePage;
+
         for (int box = 0; box < 16; box++) {
-            std::string fileString = "";
-            int filePage = terminal.filePage;
-            if (box+(16*(filePage-1)) < folderCount) {
-                // Is a folder
-                fileName.setFillColor(sf::Color(235,235,180));
-                fileString = folders[box+(16*(filePage-1))];
-            } else if (box+(16*(filePage-1))-folderCount < fileCount) {
-                // Is a file
+            const int index = box + (16 * (filePage - 1));
+            std::string entry;
+
+            if (index < folderCount) {
+                fileName.setFillColor(sf::Color(235, 235, 180));
+                entry = folders[index];
+            } else if (index - folderCount < fileCount) {
                 fileName.setFillColor(sf::Color::White);
-                fileString = files[box+(16*(filePage-1))-folderCount];
+                entry = files[index - folderCount];
             }
-            
-            if (fileString != "") {
-                fileBox.setPosition(sf::Vector2f(60.f,(150.f+39.f*box)));
-                window->draw(fileBox);
-                
-                fileName.setString(fileString);
-                sf::FloatRect fileNameRect = fileName.getLocalBounds();
-                sf::Vector2f origin(
-                    fileNameRect.position.x + fileNameRect.size.x / 2.0f,
-                    fileNameRect.position.y + fileNameRect.size.y / 2.0f
-                );
-                origin.x = std::round(origin.x);
-                origin.y = std::round(origin.y);
-                fileName.setOrigin(origin);
-                
-                sf::Vector2f pos(510.f,(168.f+39.f*box));
+            if (entry.empty()) continue;
 
-                // Snap to pixel grid
-                pos.x = std::round(pos.x);
-                pos.y = std::round(pos.y);
+            fileBox.setPosition({60.f, 150.f + 39.f * box});
+            window->draw(fileBox);
 
-                fileName.setPosition(pos);
-                
-                window->draw(fileName);
-                
-                // Draw Page Number Indicator
-                int totalPages = (folderCount+fileCount)/16;
-                if ((folderCount+fileCount) % 16 != 0) totalPages++; // Add one if not on page turn
-                
-                pageString.setString("Page: "+std::to_string(filePage)+"/"+std::to_string(totalPages));
-                
-                sf::FloatRect pageNameRect = pageString.getLocalBounds();
-                sf::Vector2f originPage(
-                    pageNameRect.position.x + pageNameRect.size.x / 2.0f,
-                    pageNameRect.position.y + pageNameRect.size.y / 2.0f
-                );
-                originPage.x = std::round(originPage.x);
-                originPage.y = std::round(originPage.y);
-                pageString.setOrigin(originPage);
-                
-                sf::Vector2f posPage(510.f,(168.f+39.f*16));
-
-                // Snap to pixel grid
-                posPage.x = std::round(posPage.x);
-                posPage.y = std::round(posPage.y);
-
-                pageString.setPosition(posPage);
-                
-                window->draw(pageString);
-            }
+            fileName.setString(entry);
+            const sf::FloatRect rect = fileName.getLocalBounds();
+            fileName.setOrigin({std::round(rect.position.x + rect.size.x / 2.0f),
+                                std::round(rect.position.y + rect.size.y / 2.0f)});
+            fileName.setPosition({510.f, std::round(168.f + 39.f * box)});
+            window->draw(fileName);
         }
-        
-        // draw the terminal
-        terminal.draw(window);
+
+        // Page indicator, drawn once rather than once per row.
+        const int total = folderCount + fileCount;
+        int totalPages = total / 16;
+        if (total % 16 != 0) totalPages++;
+        if (totalPages < 1) totalPages = 1;
+
+        sf::Text pageString(terminal.font,
+                            "Page: " + std::to_string(filePage) + "/" + std::to_string(totalPages), 18);
+        pageString.setFillColor(sf::Color::White);
+        const sf::FloatRect pageRect = pageString.getLocalBounds();
+        pageString.setOrigin({std::round(pageRect.position.x + pageRect.size.x / 2.0f),
+                              std::round(pageRect.position.y + pageRect.size.y / 2.0f)});
+        pageString.setPosition({510.f, std::round(168.f + 39.f * 16)});
+        window->draw(pageString);
     }
+
+    terminal.draw(window);
 }
