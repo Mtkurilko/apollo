@@ -2,37 +2,47 @@
 #define REMOTE_SERVER_H
 
 #include <string>
-#include "PropertiesParser.h"
 
+#include "Config.h"
+
+// A single SSH session against one configured Connection. Commands ride a
+// shared ControlMaster socket, so only the first one pays for the handshake.
 class RemoteServer {
 public:
-    RemoteServer(const std::string& configFilePath);
+    explicit RemoteServer(Connection conn);
     ~RemoteServer();
+
+    RemoteServer(const RemoteServer&) = delete;
+    RemoteServer& operator=(const RemoteServer&) = delete;
 
     bool connect();
     void disconnect();
     bool isConnected() const;
+
     std::string getConnectionStatus() const;
     std::string getRemoteWorkingDir() const;
-    std::string getHost() const;
-    std::string getUser() const;
-    std::string getPassword() const;
-    std::string getPort() const;
+    std::string getName() const { return conn.name; }
+    std::string getHost() const { return conn.host; }
+    std::string getUser() const { return conn.user; }
+    std::string getPassword() const { return conn.password; }
+    std::string getKeyPath() const { return conn.keyPath; }
+    std::string getPort() const { return conn.port; }
+    std::string getLabel() const { return conn.label(); }
+
     std::string executeRemoteCommand(const std::string& command);
 
+    // The ssh/scp prefix callers need to reach this host, sharing the same
+    // multiplexed socket.
+    std::string sshPrefix() const;
+    std::string scpPrefix() const;
+
 private:
-    std::string host;
-    std::string user;
-    std::string password;
-    std::string keyPath;
-    std::string port;
+    Connection conn;
     bool connected;
     std::string statusMessage;
-    std::string remoteWorkingDir; // tracked remote cwd
-    std::string controlPath;      // ssh ControlMaster socket
+    std::string remoteWorkingDir;
+    std::string controlPath;
 
-    void loadConfigFromProperties(const std::string& configFilePath);
-    std::string buildSSHCommand() const;
     void closeControlMaster() const;
 };
 

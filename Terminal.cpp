@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -15,6 +16,8 @@
 #include <unistd.h>
 
 #include "AppPaths.h"
+#include "ConfigCommand.h"
+#include "Version.h"
 
 namespace fs = std::filesystem;
 
@@ -68,10 +71,7 @@ Terminal::Terminal() : filePage(1), remoteServer(nullptr) {
     glyphAdvance = monoFont.getGlyph(U'M', lineSize, false).advance;
     if (glyphAdvance <= 0.f) glyphAdvance = static_cast<float>(lineSize) * 0.6f;
 
-    const fs::path configPath = apollo::configPath();
-    if (fs::exists(configPath)) {
-        remoteServer = std::make_unique<RemoteServer>(configPath.string());
-    }
+    cfg.load();
 }
 
 Terminal::~Terminal() {
@@ -86,6 +86,10 @@ Terminal::~Terminal() {
 void Terminal::pushLine(std::string s) {
     scrollback.push_back(std::move(s));
     while (scrollback.size() > kMaxScrollback) scrollback.pop_front();
+}
+
+void Terminal::pushLines(const std::vector<std::string>& lines) {
+    for (const auto& line : lines) pushLine(line);
 }
 
 void Terminal::addHistory(std::string input) {
@@ -114,8 +118,37 @@ bool Terminal::consumeDirectoryChanged() {
     return dirChanged.exchange(false, std::memory_order_relaxed);
 }
 
+bool Terminal::consumeOnboardRequest() {
+    const bool requested = onboardRequested;
+    onboardRequested = false;
+    return requested;
+}
+
 void Terminal::scrollToBottom() {
     scrollOffset = 0;
+}
+
+void Terminal::clearScrollback() {
+    scrollback.clear();
+    scrollOffset = 0;
+}
+
+void Terminal::printWelcome() {
+    pushLine("Apollo " APOLLO_VERSION);
+    const auto names = cfg.connectionNames();
+    if (names.empty()) {
+        pushLine("   No SSH connections yet — add one with `apollo config add <name> <user>@<host>`");
+    } else {
+        std::string line = "   Connections: ";
+        for (std::size_t i = 0; i < names.size(); ++i) {
+            if (i) line += ", ";
+            line += names[i];
+            if (names[i] == cfg.defaultConnection() && names.size() > 1) line += " (default)";
+        }
+        pushLine(line);
+    }
+    pushLine("   Type `apollo help` for commands.");
+    pushLine("");
 }
 
 // ---------------------------------------------------------------------------
@@ -381,6 +414,83 @@ void Terminal::submit() {
 }
 
 // ---------------------------------------------------------------------------
+// Connections
+// ---------------------------------------------------------------------------
+
+void Terminal::doConnect(const std::string& requestedName) {
+    if (remoteServer && remoteServer->isConnected()) {
+        pushLine("Already connected to " + remoteServer->getLabel() + " as '" +
+                 remoteServer->getName() + "'. Disconnect first.");
+        return;
+    }
+
+    std::string error;
+    const auto conn = cfg.resolveConnection(requestedName, error);
+    if (!conn) {
+        pushLine(error);
+        return;
+    }
+
+    pushLine("Connecting to " + conn->label() + " as '" + conn->name + "'...");
+    remoteServer = std::make_unique<RemoteServer>(*conn);
+
+    if (!remoteServer->connect()) {
+        pushLine(remoteServer->getConnectionStatus());
+        remoteServer.reset();
+        return;
+    }
+
+    pushLine(remoteServer->getConnectionStatus());
+
+    const std::string remoteDir = conn->remoteDir.empty() ? "~/APOLLO" : conn->remoteDir;
+    const std::string cdResult = remoteServer->executeRemoteCommand("cd " + remoteDir + " 2>&1");
+    if (cdResult.find("No such file") != std::string::npos) {
+        pushLine("Note: " + remoteDir + " does not exist on the remote host.");
+        pushLine("Point Apollo elsewhere with: apollo config set connection." + conn->name +
+                 ".remoteDir <path>");
+    }
+    dirChanged.store(true);
+}
+
+void Terminal::doDisconnect() {
+    if (!remoteServer || !remoteServer->isConnected()) {
+        pushLine("Not connected to any remote server.");
+        return;
+    }
+    const std::string name = remoteServer->getName();
+    remoteServer->disconnect();
+    remoteServer.reset();
+    pushLine("Disconnected from '" + name + "'.");
+    dirChanged.store(true);
+}
+
+void Terminal::printHelp() {
+    pushLines({
+        "Apollo " APOLLO_VERSION,
+        "",
+        "  apollo                     return to the Apollo root",
+        "  apollo help                this list",
+        "  apollo setup               re-run the first-run wizard",
+        "  apollo clear               clear the scrollback",
+        "  apollo exit                quit Apollo",
+        "",
+        "Connections:",
+        "  apollo connect [name]      connect over SSH (name required if several exist)",
+        "  apollo disconnect          drop the SSH session",
+        "  apollo connections         list configured connections",
+        "  apollo config ...          view and edit configuration",
+        "",
+        "Files:",
+        "  open <file>                open a file (downloads it first when remote)",
+        "  apollo save                upload files edited from the remote cache",
+        "  apollo p++ / apollo p--    page through the file list",
+        "  apollo term / termk        open Terminal.app here (termk also quits Apollo)",
+        "",
+        "Anything else runs in the shell — locally, or on the remote host when connected.",
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Command execution
 // ---------------------------------------------------------------------------
 
@@ -396,122 +506,112 @@ void Terminal::openTerminalApp() {
         const std::string escapedDir = isTildePath ? workingDir : escapeForShell(workingDir);
 
         const std::string tempScript = "/tmp/apollo_ssh_" + std::to_string(getpid()) + ".command";
-        std::ofstream scriptFile(tempScript);
-        scriptFile << "#!/bin/bash\n";
-        scriptFile << "sshpass -p '" << remoteServer->getPassword() << "' ssh "
-                   << "-o StrictHostKeyChecking=no -p " << remoteServer->getPort() << " "
-                   << remoteServer->getUser() << "@" << remoteServer->getHost()
-                   << " -t 'cd " << escapedDir << "; exec bash'\n";
-        scriptFile.close();
-        chmod(tempScript.c_str(), 0755);
-
-        const std::string cmd = "open -a Terminal \"" + tempScript + "\"";
-        system(cmd.c_str());
+        {
+            std::ofstream scriptFile(tempScript);
+            scriptFile << "#!/bin/bash\n";
+            scriptFile << remoteServer->sshPrefix() << " -t 'cd " << escapedDir << "; exec $SHELL -l'\n";
+        }
+        // The script embeds a password when the connection has no key.
+        chmod(tempScript.c_str(), 0700);
+        std::system(("open -a Terminal \"" + tempScript + "\"").c_str());
     } else {
-        const std::string cmd = "open -a Terminal \"" + fs::current_path().string() + "\"";
-        system(cmd.c_str());
+        std::system(("open -a Terminal \"" + fs::current_path().string() + "\"").c_str());
     }
 }
 
-bool Terminal::runBuiltin(const std::string& name, const std::string& argument) {
-    if (name != "apollo") return false;
+bool Terminal::runBuiltin(const std::vector<std::string>& parts) {
+    if (parts.empty() || parts[0] != "apollo") return false;
 
-    const std::string echo = "APOLLO % apollo" + (argument.empty() ? "" : " " + argument);
+    const std::string sub = parts.size() > 1 ? parts[1] : "";
+    const std::string arg = parts.size() > 2 ? parts[2] : "";
+    pushLine("APOLLO % " + command);
 
-    if (argument.empty()) {
+    if (sub.empty()) {
         // Bare `apollo` returns to the Apollo root, local or remote.
-        pushLine(echo);
         setCommand(remoteServer && remoteServer->isConnected()
-                       ? "cd ~/APOLLO"
-                       : "cd " + apollo::appRoot().parent_path().string());
+                       ? "cd " + remoteServer->getRemoteWorkingDir()
+                       : "cd " + cfg.rootDir());
         executeCommand();
         return true;
     }
 
-    if (argument == "exit") {
-        pushLine(echo);
+    if (sub == "help" || sub == "--help" || sub == "-h") {
+        printHelp();
+        return true;
+    }
+
+    if (sub == "config") {
+        const std::vector<std::string> configArgs(parts.begin() + 2, parts.end());
+        const ConfigCommandResult res = runConfigCommand(configArgs, cfg);
+        for (const auto& line : res.output) pushLine("   " + line);
+        return true;
+    }
+
+    if (sub == "setup" || sub == "onboard") {
+        onboardRequested = true;
+        return true;
+    }
+
+    if (sub == "connections") {
+        const ConfigCommandResult res = runConfigCommand({"connections"}, cfg);
+        for (const auto& line : res.output) pushLine("   " + line);
+        return true;
+    }
+
+    if (sub == "connect") {
+        doConnect(arg);
+        return true;
+    }
+
+    if (sub == "disconnect") {
+        doDisconnect();
+        return true;
+    }
+
+    if (sub == "exit") {
         if (remoteServer && remoteServer->isConnected()) {
             remoteServer->disconnect();
-            pushLine("Disconnected from remote server.");
+            pushLine("Disconnected.");
         }
         quitRequested = true;
         return true;
     }
 
-    if (argument == "clear") {
+    if (sub == "clear") {
         scrollback.clear();
         scrollToBottom();
         return true;
     }
 
-    if (argument == "connect") {
-        pushLine(echo);
-        if (!remoteServer) {
-            pushLine("ERROR: RemoteServer not initialized. Check apollo.properties exists.");
-        } else if (remoteServer->connect()) {
-            pushLine(remoteServer->getConnectionStatus());
-            const std::string cdResult = remoteServer->executeRemoteCommand("cd ~/APOLLO 2>&1");
-            if (cdResult.find("APOLLO") != std::string::npos) {
-                pushLine("Remote directory: " + stripCarriageReturn(cdResult));
-            } else {
-                pushLine("Note: ~/APOLLO may not exist on remote server");
-                appendOutputBlock(cdResult);
-            }
-            dirChanged.store(true);
-        } else {
-            pushLine(remoteServer->getConnectionStatus());
-        }
-        return true;
-    }
-
-    if (argument == "disconnect") {
-        pushLine(echo);
-        if (!remoteServer) {
-            pushLine("ERROR: RemoteServer not initialized.");
-        } else if (!remoteServer->isConnected()) {
-            pushLine("ERROR: Not connected to any remote server.");
-        } else {
-            remoteServer->disconnect();
-            pushLine("Disconnected from remote server.");
-            dirChanged.store(true);
-        }
-        return true;
-    }
-
-    if (argument == "p++") {
-        pushLine(echo);
+    if (sub == "p++") {
         filePage++;
         return true;
     }
 
-    if (argument == "p--") {
-        pushLine(echo);
+    if (sub == "p--") {
         if (filePage > 1) filePage--;
-        else pushLine("ERROR: No pages to go back");
+        else pushLine("   No pages to go back");
         return true;
     }
 
-    if (argument == "term" || argument == "termk") {
-        pushLine(echo);
+    if (sub == "term" || sub == "termk") {
         openTerminalApp();
-        if (argument == "termk") quitRequested = true;
+        if (sub == "termk") quitRequested = true;
         return true;
     }
 
-    if (argument == "save") {
-        pushLine(echo);
+    if (sub == "save") {
         if (!remoteServer || !remoteServer->isConnected()) {
-            pushLine("ERROR: Not connected to remote server. apollo save only works when connected.");
+            pushLine("   Not connected. `apollo save` uploads files edited from a remote session.");
             return true;
         }
 
         const std::string tempDir = "/tmp/apollo_files";
         if (!fs::exists(tempDir)) {
-            pushLine("No modified files to upload.");
+            pushLine("   No modified files to upload.");
             return true;
         }
 
-        const std::string password = remoteServer->getPassword();
         const std::string workingDir = remoteServer->getRemoteWorkingDir();
         std::string filesUploaded;
         int uploadCount = 0;
@@ -521,44 +621,42 @@ bool Terminal::runBuiltin(const std::string& name, const std::string& argument) 
                 if (!fs::is_regular_file(entry)) continue;
                 const std::string filename = entry.path().filename().string();
                 const std::string localFile = tempDir + "/" + filename;
-                const std::string remoteFile = workingDir + "/" + filename;
 
-                const std::string scpCmd =
-                    "sshpass -p '" + password + "' scp -P " + remoteServer->getPort() +
-                    " -o StrictHostKeyChecking=no \"" + localFile + "\" '" +
-                    remoteServer->getUser() + "@" + remoteServer->getHost() + ":" + remoteFile + "'";
+                const std::string scpCmd = remoteServer->scpPrefix() + "\"" + localFile + "\" '" +
+                                           remoteServer->getUser() + "@" + remoteServer->getHost() +
+                                           ":" + workingDir + "/" + filename + "'";
 
-                if (system(scpCmd.c_str()) == 0) {
+                if (std::system(scpCmd.c_str()) == 0) {
                     if (uploadCount++) filesUploaded += ", ";
                     filesUploaded += filename;
                     std::error_code ec;
                     fs::remove(localFile, ec);
-                    if (ec) pushLine("Warning: Could not delete " + filename + " from cache");
+                    if (ec) pushLine("   Warning: could not clear " + filename + " from the cache");
                 } else {
-                    pushLine("ERROR: Failed to upload " + filename);
+                    pushLine("   ERROR: failed to upload " + filename);
                 }
             }
         } catch (const std::exception& e) {
-            pushLine("ERROR: " + std::string(e.what()));
+            pushLine("   ERROR: " + std::string(e.what()));
             return true;
         }
 
-        if (uploadCount > 0) {
-            pushLine("Uploaded " + std::to_string(uploadCount) + " file(s): " + filesUploaded);
-        } else {
-            pushLine("No files to upload.");
-        }
+        pushLine(uploadCount > 0 ? "   Uploaded " + std::to_string(uploadCount) + " file(s): " +
+                                       filesUploaded
+                                 : "   No files to upload.");
         return true;
     }
 
-    pushLine(echo);
-    pushLine("Unknown apollo command: " + argument);
+    pushLine("   Unknown apollo command: " + sub);
+    pushLine("   Run `apollo help` for the list.");
     return true;
 }
 
 void Terminal::executeCommand() {
     const std::vector<std::string> parts = tokenize(command);
     if (parts.empty()) return;
+
+    if (runBuiltin(parts)) return;
 
     const std::string& name = parts[0];
     std::string argument;
@@ -567,30 +665,19 @@ void Terminal::executeCommand() {
         argument += parts[i];
     }
 
-    if (runBuiltin(name, argument)) return;
-
     // `cd` stays synchronous: the GUI reads the working directory every frame,
     // so it has to be correct before the next draw.
     if (name == "cd") {
         pushLine("APOLLO % " + command);
         if (argument.empty()) {
-            pushLine("Usage: cd <directory>");
+            pushLine("   Usage: cd <directory>");
             return;
         }
         if (remoteServer && remoteServer->isConnected()) {
             appendOutputBlock(remoteServer->executeRemoteCommand(command));
         } else {
-            fs::path target = argument;
-            if (!argument.empty() && argument[0] == '~') {
-                if (const char* home = std::getenv("HOME")) {
-                    target = fs::path(home) / argument.substr(argument.size() > 1 ? 2 : 1);
-                }
-            }
-            if (chdir(target.c_str()) == 0) {
-                pushLine("Directory changed: " + target.string());
-            } else {
-                pushLine("cd failed: " + target.string());
-            }
+            const fs::path target = apollo::expandUser(argument);
+            if (chdir(target.c_str()) != 0) pushLine("   cd failed: " + target.string());
         }
         dirChanged.store(true);
         return;
@@ -599,7 +686,7 @@ void Terminal::executeCommand() {
     if (name == "open") {
         pushLine("APOLLO % " + command);
         if (argument.empty()) {
-            pushLine("Usage: open <filename>");
+            pushLine("   Usage: open <filename>");
             return;
         }
 
@@ -610,28 +697,26 @@ void Terminal::executeCommand() {
             const std::string localFile = tempDir + "/" + argument;
 
             if (fs::exists(localFile)) {
-                system(("open \"" + localFile + "\"").c_str());
-                pushLine("File opened from cache: " + argument);
+                std::system(("open \"" + localFile + "\"").c_str());
+                pushLine("   Opened from cache: " + argument);
                 return;
             }
 
-            const std::string remoteFile = remoteServer->getRemoteWorkingDir() + "/" + argument;
-            const std::string scpCmd =
-                "sshpass -p '" + remoteServer->getPassword() + "' scp -P " +
-                remoteServer->getPort() + " -o StrictHostKeyChecking=no '" +
-                remoteServer->getUser() + "@" + remoteServer->getHost() + ":" + remoteFile +
-                "' \"" + localFile + "\"";
+            const std::string scpCmd = remoteServer->scpPrefix() + "'" + remoteServer->getUser() +
+                                       "@" + remoteServer->getHost() + ":" +
+                                       remoteServer->getRemoteWorkingDir() + "/" + argument +
+                                       "' \"" + localFile + "\"";
 
-            if (system(scpCmd.c_str()) == 0) {
-                system(("open \"" + localFile + "\"").c_str());
-                pushLine("File opened: " + argument);
-                pushLine("Note: Use 'apollo save' to upload changes when done editing.");
+            if (std::system(scpCmd.c_str()) == 0) {
+                std::system(("open \"" + localFile + "\"").c_str());
+                pushLine("   Opened: " + argument);
+                pushLine("   Run `apollo save` to upload your changes when done.");
             } else {
-                pushLine("ERROR: Failed to download file via SCP");
+                pushLine("   ERROR: could not download " + argument);
             }
         } else {
-            system(("open \"" + argument + "\"").c_str());
-            pushLine("File opened: " + argument);
+            std::system(("open \"" + argument + "\"").c_str());
+            pushLine("   Opened: " + argument);
         }
         return;
     }
@@ -821,7 +906,7 @@ void Terminal::draw(sf::RenderWindow* window) {
     view.reserve(static_cast<std::size_t>(maxLines));
     int toSkip = scrollOffset;
     for (auto it = scrollback.rbegin(); it != scrollback.rend(); ++it) {
-        std::vector<std::string> wrapped = wrap(*it, cols);
+        const std::vector<std::string> wrapped = wrap(*it, cols);
         for (auto w = wrapped.rbegin(); w != wrapped.rend(); ++w) {
             if (toSkip > 0) {
                 --toSkip;
@@ -844,7 +929,7 @@ void Terminal::draw(sf::RenderWindow* window) {
     }
 
     // --- prompt row -------------------------------------------------------
-    const std::string prompt = isBusy() ? "APOLLO ⋯ " : "APOLLO % ";
+    const std::string prompt = isBusy() ? "APOLLO . " : "APOLLO % ";
     const float promptY = boxPos.y + boxSize.y - padY - perLine;
 
     // Horizontal scroll keeps the caret on screen on very long lines.

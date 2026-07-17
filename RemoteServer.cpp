@@ -2,8 +2,10 @@
 
 #include <cctype>
 #include <cstdio>
-#include <iostream>
+#include <cstdlib>
 #include <unistd.h>
+
+#include "AppPaths.h"
 
 namespace {
 
@@ -32,84 +34,88 @@ std::string escapeForShell(const std::string& str) {
 
 } // namespace
 
-RemoteServer::RemoteServer(const std::string& configFilePath)
-    : port("22"), connected(false), remoteWorkingDir("~/APOLLO") {
-    loadConfigFromProperties(configFilePath);
-    // Short path: macOS caps AF_UNIX socket paths at ~104 bytes, and ssh
-    // refuses a ControlPath that would overflow it.
-    controlPath = "/tmp/apollo-ssh-" + std::to_string(getpid());
+RemoteServer::RemoteServer(Connection connection)
+    : conn(std::move(connection)), connected(false) {
+    remoteWorkingDir = conn.remoteDir.empty() ? "~/APOLLO" : conn.remoteDir;
+    // macOS caps AF_UNIX paths near 104 bytes and ssh refuses anything longer,
+    // so the socket name stays short.
+    controlPath = "/tmp/apollo-" + conn.name + "-" + std::to_string(getpid());
 }
 
 RemoteServer::~RemoteServer() {
     if (connected) closeControlMaster();
 }
 
-void RemoteServer::loadConfigFromProperties(const std::string& configFilePath) {
-    PropertiesParser props(configFilePath);
-
-    host = props.getProperty("ssh.host", "");
-    user = props.getProperty("ssh.user", "");
-    password = props.getProperty("ssh.password", "");
-    keyPath = props.getProperty("ssh.key", "");
-    port = props.getProperty("ssh.port", "22");
-
-    if (host.empty() || user.empty() || (password.empty() && keyPath.empty())) {
-        statusMessage = "ERROR: Missing SSH configuration (host, user, and key or password)";
-    }
-}
-
-std::string RemoteServer::buildSSHCommand() const {
+std::string RemoteServer::sshPrefix() const {
     std::string cmd;
 
-    // Key auth keeps the password out of the process table entirely; fall back
-    // to sshpass only when no key is configured.
-    if (keyPath.empty()) {
-        cmd = "sshpass -p '" + password + "' ";
+    // Key auth keeps the password out of the process table entirely; sshpass is
+    // only a fallback for hosts that have nothing else.
+    if (conn.keyPath.empty() && !conn.password.empty()) {
+        cmd = "sshpass -p '" + conn.password + "' ";
     }
 
     cmd += "ssh -o StrictHostKeyChecking=no ";
 
-    // Connection multiplexing. The first command pays for the TCP handshake,
-    // key exchange and auth; every command after it reuses the same socket,
-    // which takes a few hundred milliseconds down to a few milliseconds.
+    // Connection multiplexing: the first command pays for the TCP handshake,
+    // key exchange and auth; the rest reuse the socket.
     cmd += "-o ControlMaster=auto ";
     cmd += "-o ControlPath=" + controlPath + " ";
     cmd += "-o ControlPersist=300 ";
     cmd += "-o ConnectTimeout=8 ";
 
-    if (!keyPath.empty()) cmd += "-i " + keyPath + " ";
-    if (port != "22") cmd += "-p " + port + " ";
+    if (!conn.keyPath.empty()) {
+        cmd += "-i \"" + apollo::expandUser(conn.keyPath).string() + "\" ";
+    }
+    if (conn.port != "22") cmd += "-p " + conn.port + " ";
 
-    cmd += user + "@" + host;
+    cmd += conn.user + "@" + conn.host;
+    return cmd;
+}
+
+std::string RemoteServer::scpPrefix() const {
+    std::string cmd;
+    if (conn.keyPath.empty() && !conn.password.empty()) {
+        cmd = "sshpass -p '" + conn.password + "' ";
+    }
+    cmd += "scp -o StrictHostKeyChecking=no ";
+    cmd += "-o ControlPath=" + controlPath + " ";
+    if (!conn.keyPath.empty()) {
+        cmd += "-i \"" + apollo::expandUser(conn.keyPath).string() + "\" ";
+    }
+    if (conn.port != "22") cmd += "-P " + conn.port + " ";
     return cmd;
 }
 
 void RemoteServer::closeControlMaster() const {
-    // Tears down the shared socket so a later connect() starts clean.
-    const std::string cmd =
-        "ssh -o ControlPath=" + controlPath + " -O exit " + user + "@" + host + " >/dev/null 2>&1";
-    system(cmd.c_str());
+    const std::string cmd = "ssh -o ControlPath=" + controlPath + " -O exit " + conn.user + "@" +
+                            conn.host + " >/dev/null 2>&1";
+    std::system(cmd.c_str());
 }
 
 bool RemoteServer::connect() {
-    if (host.empty() || user.empty() || (password.empty() && keyPath.empty())) {
-        statusMessage = "ERROR: SSH configuration incomplete. Check apollo.properties";
+    if (!conn.valid()) {
+        statusMessage = "ERROR: Connection '" + conn.name + "' is missing a host or user.";
+        connected = false;
+        return false;
+    }
+    if (conn.keyPath.empty() && conn.password.empty()) {
+        statusMessage = "ERROR: Connection '" + conn.name + "' has no key or password. Set one with:"
+                        " apollo config set connection." + conn.name + ".key ~/.ssh/id_ed25519";
         connected = false;
         return false;
     }
 
-    // This first call also establishes the ControlMaster socket that every
-    // subsequent command rides on.
-    const std::string testCmd = buildSSHCommand() + " 'echo \"Connection successful\"' 2>&1";
-    const std::string result = runCapture(testCmd);
+    // This first call also establishes the ControlMaster socket.
+    const std::string result = runCapture(sshPrefix() + " 'echo \"Connection successful\"' 2>&1");
 
     if (result.find("Connection successful") != std::string::npos) {
-        statusMessage = "Connected to " + user + "@" + host;
+        statusMessage = "Connected to " + conn.label() + " as '" + conn.name + "'";
         connected = true;
         return true;
     }
 
-    statusMessage = "ERROR: SSH connection failed. " + result;
+    statusMessage = "ERROR: SSH connection to " + conn.label() + " failed. " + result;
     connected = false;
     return false;
 }
@@ -118,7 +124,7 @@ void RemoteServer::disconnect() {
     if (connected) closeControlMaster();
     connected = false;
     statusMessage = "Disconnected";
-    remoteWorkingDir = "~/APOLLO";
+    remoteWorkingDir = conn.remoteDir.empty() ? "~/APOLLO" : conn.remoteDir;
 }
 
 bool RemoteServer::isConnected() const {
@@ -131,22 +137,6 @@ std::string RemoteServer::getConnectionStatus() const {
 
 std::string RemoteServer::getRemoteWorkingDir() const {
     return remoteWorkingDir;
-}
-
-std::string RemoteServer::getHost() const {
-    return host;
-}
-
-std::string RemoteServer::getUser() const {
-    return user;
-}
-
-std::string RemoteServer::getPassword() const {
-    return password;
-}
-
-std::string RemoteServer::getPort() const {
-    return port;
 }
 
 std::string RemoteServer::executeRemoteCommand(const std::string& command) {
@@ -181,22 +171,20 @@ std::string RemoteServer::executeRemoteCommand(const std::string& command) {
         isCdCommand ? "cd " + workingDirPart + " && " + cmdToExecute + " && pwd"
                     : "cd " + workingDirPart + " && " + command;
 
-    const std::string fullCmd = buildSSHCommand() + " '" + cmdWithContext + "' 2>&1";
-    std::string result = runCapture(fullCmd);
+    std::string result = runCapture(sshPrefix() + " '" + cmdWithContext + "' 2>&1");
 
     if (isCdCommand && !result.empty() && result.find("ERROR") == std::string::npos) {
         // The trailing `pwd` reports the directory we actually landed in.
-        std::size_t end = result.find_last_not_of(" \t\r\n");
+        const std::size_t end = result.find_last_not_of(" \t\r\n");
         if (end != std::string::npos) {
             const std::size_t lineStart = result.find_last_of('\n', end);
-            std::string newDir =
-                result.substr(lineStart == std::string::npos ? 0 : lineStart + 1,
-                              end - (lineStart == std::string::npos ? 0 : lineStart + 1) + 1);
+            const std::size_t from = (lineStart == std::string::npos) ? 0 : lineStart + 1;
+            const std::string newDir = result.substr(from, end - from + 1);
             const std::size_t trimStart = newDir.find_first_not_of(" \t\r");
             if (trimStart != std::string::npos && newDir[trimStart] == '/') {
                 remoteWorkingDir = newDir.substr(trimStart);
                 // The pwd line was bookkeeping, not output the user asked for.
-                result.erase(lineStart == std::string::npos ? 0 : lineStart);
+                result.erase(from);
             }
         }
     }

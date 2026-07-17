@@ -11,6 +11,7 @@
 
 #include <SFML/Graphics.hpp>
 
+#include "Config.h"
 #include "RemoteServer.h"
 
 class Terminal {
@@ -38,6 +39,8 @@ public:
 
     void addHistory(std::string input);
     void autocomplete(std::string& line);
+    void printWelcome();
+    void clearScrollback();
 
     bool isRemoteConnected() const;
     std::vector<std::pair<std::string, bool>> getRemoteDirectoryListing();
@@ -45,7 +48,10 @@ public:
 
     // True once after anything that may have changed the working directory.
     bool consumeDirectoryChanged();
+    bool consumeOnboardRequest();
     bool isBusy() const { return commandRunning.load(std::memory_order_relaxed); }
+
+    Config& config() { return cfg; }
 
     sf::Font font;     // Apollo chrome; System draws with this
     sf::Font monoFont; // terminal pane
@@ -75,6 +81,7 @@ private:
     std::atomic<bool> commandRunning{false};
     std::atomic<int> childPid{-1};
     std::atomic<bool> dirChanged{true};
+    bool onboardRequested = false;
 
     // --- layout -----------------------------------------------------------
     unsigned int lineSize = 17;
@@ -86,18 +93,24 @@ private:
     float padY = 14.f;
     sf::Clock cursorBlink;
 
+    Config cfg;
     std::unique_ptr<RemoteServer> remoteServer;
 
     // --- helpers ----------------------------------------------------------
     std::vector<std::string> tokenize(const std::string& line);
     void submit();
-    bool runBuiltin(const std::string& name, const std::string& argument);
+    bool runBuiltin(const std::vector<std::string>& parts);
     void runAsync(const std::string& shellCommand);
     void runRemote(const std::string& shellCommand);
     void cancelCommand();
     void reapWorker();
     void pushLine(std::string s);
+    void pushLines(const std::vector<std::string>& lines);
     void appendOutputBlock(const std::string& text);
+
+    void doConnect(const std::string& requestedName);
+    void doDisconnect();
+    void printHelp();
 
     std::size_t columns() const;
     std::vector<std::string> wrap(const std::string& s, std::size_t cols) const;
