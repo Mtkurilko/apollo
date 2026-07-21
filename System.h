@@ -3,7 +3,9 @@
 
 #include <array>
 #include <filesystem>
+#include <map>
 #include <string>
+#include <vector>
 
 #include <SFML/Graphics.hpp>
 
@@ -17,26 +19,49 @@ public:
     void display(sf::RenderWindow* window);
 
     void setUserAction(char input);
-    void setRootDir(std::string path);
     void setInput(std::string inString);
 
     bool isRoot();
     bool isBooting();
+    // The setup wizard echoes typed characters itself, so main must not.
+    bool isMaskingInput() const;
     int getItemCount();
     void executeClick(int locationX, int locationY);
 
     // Forces a directory re-read on the next update().
     void requestRefresh();
 
+    // Enters the first-run wizard (used by `apollo setup` from the shell).
+    void beginOnboarding();
+
     Terminal terminal;
 
 private:
     static constexpr std::size_t kMaxEntries = 1000;
 
+    // One question in the first-run wizard.
+    struct SetupField {
+        std::string key;
+        std::string prompt;
+        std::string help;
+        std::string defaultValue;
+        bool mask = false;
+        bool optional = false;
+    };
+
     void checkBoot(sf::RenderWindow* window);
     void refreshListing();
     void drawChrome(sf::RenderWindow* window);
     void drawColumns(sf::RenderWindow* window);
+    void drawSetup(sf::RenderWindow* window);
+
+    void beginSetup();
+    void buildSetupFields();
+    bool fieldApplies(std::size_t index) const;
+    void advanceSetup();
+    void submitSetupAnswer();
+    void finishSetup();
+    void applyRootDir();
 
     char userAction;
     std::filesystem::path rootDir;
@@ -64,10 +89,17 @@ private:
     sf::Clock mtimeClock;
     std::filesystem::file_time_type lastWriteTime;
 
-    enum Boot { Initial, Password, Anim, Exit, Finished };
+    enum Boot { Setup, Initial, Password, Anim, Exit, Finished };
     Boot bootStep;
 
-    // boot typing animation
+    // --- first-run wizard -------------------------------------------------
+    std::vector<SetupField> setupFields;
+    std::size_t setupIndex = 0;
+    std::map<std::string, std::string> setupAnswers;
+    std::string setupError;
+    std::vector<std::string> setupDone; // confirmations shown above the prompt
+
+    // --- boot typing animation -------------------------------------------
     std::string bootTitleFull = "APOLLO";
     std::size_t bootTitleVisibleChars = 0;
     bool bootTitleDone = false;
