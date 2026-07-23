@@ -1,0 +1,61 @@
+// Colours, kept free of any rendering library so the core stays portable and
+// testable. The UI layer converts Rgb into whatever its backend wants.
+#pragma once
+
+#include <array>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace apollo {
+
+struct Rgb {
+    std::uint8_t r = 0, g = 0, b = 0;
+
+    std::string hex() const;
+    // Accepts #rgb, #rrggbb, rgb(r,g,b) and the 16 ANSI colour names.
+    static std::optional<Rgb> parse(const std::string& text);
+    // Perceptual brightness, 0..1. Used to pick readable foregrounds.
+    float luma() const;
+    Rgb mix(const Rgb& other, float t) const;
+
+    bool operator==(const Rgb& o) const { return r == o.r && g == o.g && b == o.b; }
+    bool operator!=(const Rgb& o) const { return !(*this == o); }
+};
+
+// The colours Apollo's own chrome uses. The terminal grid uses `ansi` for
+// programs that ask for indexed colours.
+struct Theme {
+    std::string name = "apollo";
+
+    Rgb bg{18, 20, 28};
+    Rgb surface{24, 27, 38};
+    Rgb fg{192, 202, 245};
+    Rgb muted{86, 95, 137};
+    Rgb border{41, 46, 66};
+    Rgb accent{122, 162, 247};
+    Rgb accentAlt{187, 154, 247};
+    Rgb success{158, 206, 106};
+    Rgb warning{224, 175, 104};
+    Rgb error{247, 118, 142};
+    Rgb selection{40, 52, 87};
+
+    // 0-7 normal, 8-15 bright.
+    std::array<Rgb, 16> ansi{};
+
+    // Built-in themes, by name. Returns nullopt for an unknown name.
+    static std::optional<Theme> builtin(const std::string& name);
+    static std::vector<std::string> builtinNames();
+
+    // Applies `key = #rrggbb` pairs from a decoration block or a theme file.
+    // Unknown keys are reported rather than ignored.
+    bool setColor(const std::string& key, const std::string& value);
+    static std::vector<std::string> colorKeys();
+
+    // Recomputes the 16 ANSI colours from the theme's own palette. Call this
+    // after overriding colours, or the terminal and the chrome drift apart.
+    void rebuildRamp();
+};
+
+} // namespace apollo
