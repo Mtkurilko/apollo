@@ -1,13 +1,11 @@
-# Local secrets. Settings now live in ~/.apollo/config.properties; this is the
-# pre-0.2 file, kept only so an existing install can migrate from it.
+# Build output
+build/
+_deps/
+compile_commands.json
+
+# Pre-0.3 settings file. It held a live SSH password; it is read once to
+# migrate and never committed.
 apollo.properties
 
 # macOS
 .DS_Store
-
-# Build output
-build/
-*.o
-*.d
-apollo
-launchApollo
