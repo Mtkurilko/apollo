@@ -208,4 +208,8 @@ private:
 // Display width of a code point: 0 for combining marks, 2 for wide glyphs.
 int charWidth(char32_t cp);
 
+// One code point as UTF-8.
+void appendUtf8(std::string& out, char32_t cp);
+std::string encodeUtf8(char32_t cp);
+
 } // namespace apollo::term

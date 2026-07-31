@@ -24,6 +24,31 @@ int charWidth(char32_t cp) {
     return 1;
 }
 
+void appendUtf8(std::string& out, char32_t cp) {
+    if (cp < 0x80) { out.push_back(static_cast<char>(cp)); return; }
+    if (cp < 0x800) {
+        out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        return;
+    }
+    if (cp < 0x10000) {
+        out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        return;
+    }
+    out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+    out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+}
+
+std::string encodeUtf8(char32_t cp) {
+    std::string out;
+    appendUtf8(out, cp);
+    return out;
+}
+
 const Cell& Row::at(int x) const {
     if (x < 0 || x >= static_cast<int>(cells.size())) return kBlank;
     return cells[static_cast<std::size_t>(x)];
