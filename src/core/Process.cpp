@@ -162,6 +162,54 @@ Result shell(const std::string& command,
     return spawnAndCollect({"/bin/sh", "-c", command}, timeout, workingDir, {});
 }
 
+Result feed(const std::vector<std::string>& argv, const std::string& input,
+            std::chrono::milliseconds timeout) {
+    Result result;
+    if (argv.empty()) { result.err = "no command given"; return result; }
+
+    Pipe in;
+    if (!in.open()) {
+        result.err = "cannot create a pipe: " + std::string(std::strerror(errno));
+        return result;
+    }
+
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_adddup2(&actions, in.fd[0], STDIN_FILENO);
+    posix_spawn_file_actions_addclose(&actions, in.fd[0]);
+    posix_spawn_file_actions_addclose(&actions, in.fd[1]);
+    posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+
+    std::vector<char*> raw;
+    raw.reserve(argv.size() + 1);
+    for (const auto& arg : argv) raw.push_back(const_cast<char*>(arg.c_str()));
+    raw.push_back(nullptr);
+
+    pid_t pid = -1;
+    const int status = posix_spawnp(&pid, argv[0].c_str(), &actions, nullptr, raw.data(), environ);
+    posix_spawn_file_actions_destroy(&actions);
+    if (status != 0) {
+        result.err = argv[0] + ": " + std::strerror(status);
+        return result;
+    }
+
+    in.closeRead();
+    std::size_t sent = 0;
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (sent < input.size() && std::chrono::steady_clock::now() < deadline) {
+        const ssize_t wrote = ::write(in.fd[1], input.data() + sent, input.size() - sent);
+        if (wrote > 0) { sent += static_cast<std::size_t>(wrote); continue; }
+        if (wrote < 0 && errno == EINTR) continue;
+        break;
+    }
+    in.closeWrite();
+
+    int wstatus = 0;
+    while (::waitpid(pid, &wstatus, 0) < 0 && errno == EINTR) {}
+    if (WIFEXITED(wstatus)) result.exitCode = WEXITSTATUS(wstatus);
+    return result;
+}
+
 std::optional<std::string> which(const std::string& name) {
     if (name.empty()) return std::nullopt;
     if (name.find('/') != std::string::npos) {

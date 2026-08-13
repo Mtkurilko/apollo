@@ -49,6 +49,9 @@ struct TerminalSettings {
     bool bell = false;
     bool copyOnSelect = true;
     bool shellIntegration = true; // OSC 7/133: cwd tracking and prompt jumps
+    // OSC 52. Off by default: it lets anything the shell runs write to the
+    // system clipboard, which is useful and worth choosing deliberately.
+    bool osc52Clipboard = false;
     std::string wordChars = "_-./@~";
 };
 

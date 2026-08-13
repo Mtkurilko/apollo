@@ -74,11 +74,9 @@ add_executable(apollo
     src/ui/Widgets.cpp
 )
 
-target_link_libraries(apollo PRIVATE
-    apollo_core
-    ftxui::screen
-    ftxui::dom
-    ftxui::component)
+# ftxui::component already carries dom and screen; naming all three makes the
+# linker warn about duplicates.
+target_link_libraries(apollo PRIVATE apollo_core ftxui::component)
 
 target_compile_options(apollo PRIVATE
     -Wall -Wextra -Wpedantic -Wshadow -Wno-unused-parameter)
@@ -95,7 +93,8 @@ add_test(NAME apollo_tests COMMAND apollo_tests)
 # ---------------------------------------------------------------------------
 # Install: one binary, plus the example config used as a starting point.
 # ---------------------------------------------------------------------------
+# One binary, and nothing else: the starter config is written by `apollo`
+# itself on first run, so there is no data directory to find at runtime and
+# no way for the two to drift apart.
 include(GNUInstallDirs)
 install(TARGETS apollo RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(FILES share/apollo.conf.example
-        DESTINATION ${CMAKE_INSTALL_DATADIR}/apollo)

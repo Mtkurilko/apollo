@@ -91,6 +91,8 @@ const std::vector<Config::Setting>& Config::schema() {
         s.push_back(flag("terminal.copy_on_select", true, "Copy as soon as text is selected"));
         s.push_back(flag("terminal.shell_integration", true,
                          "Track the shell's directory and mark prompts (OSC 7/133)"));
+        s.push_back(flag("terminal.osc52_clipboard", false,
+                         "Let programs set the system clipboard (OSC 52)"));
         s.push_back(str("terminal.word_chars", "_-./@~", "Extra characters counted as part of a word"));
 
         s.push_back(flag("browser.show", true, "Show the file browser"));
@@ -432,6 +434,7 @@ void Config::derive() {
     terminal_.bell = yes("terminal.bell", false);
     terminal_.copyOnSelect = yes("terminal.copy_on_select", true);
     terminal_.shellIntegration = yes("terminal.shell_integration", true);
+    terminal_.osc52Clipboard = yes("terminal.osc52_clipboard", false);
     terminal_.wordChars = text("terminal.word_chars", terminal_.wordChars);
 
     browser_ = BrowserSettings{};

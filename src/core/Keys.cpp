@@ -142,6 +142,8 @@ const std::vector<ActionInfo>& knownActions() {
         {"clear",           "Clear the terminal", false},
         {"search",          "Search the scrollback", false},
         {"open_config",     "Open the configuration editor", false},
+        {"edit_config",     "Open apollo.conf in your editor", false},
+        {"setup",           "Run the setup wizard again", false},
         {"reload_config",   "Re-read ~/.apollo/apollo.conf", false},
         {"help",            "Show the key and command reference", false},
         {"connect",         "Connect to an SSH destination", true},

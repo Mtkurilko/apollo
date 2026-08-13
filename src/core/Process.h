@@ -36,6 +36,12 @@ Result shell(const std::string& command,
              std::chrono::milliseconds timeout = std::chrono::seconds(20),
              const std::string& workingDir = "");
 
+// Runs a program and writes `input` to its standard input. Used for pbcopy and
+// anything else that takes its payload on a stream rather than in argv.
+Result feed(const std::vector<std::string>& argv,
+            const std::string& input,
+            std::chrono::milliseconds timeout = std::chrono::seconds(5));
+
 // Full path of an executable on PATH, or nullopt.
 std::optional<std::string> which(const std::string& name);
 
