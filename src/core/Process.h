@@ -52,4 +52,12 @@ bool detach(const std::vector<std::string>& argv, const std::string& workingDir 
 // The user's login shell, from $SHELL then the passwd entry, then /bin/sh.
 std::string userShell();
 
+// The desktop's clipboard, whichever one is installed. Returns false when
+// there is nothing on the machine that can do it.
+bool clipboardWrite(const std::string& text);
+std::optional<std::string> clipboardRead();
+
+// Hands a file to the desktop to open however it sees fit.
+bool openWithDesktop(const std::string& path);
+
 } // namespace apollo::process

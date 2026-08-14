@@ -7,7 +7,12 @@
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
-#include <util.h>
+
+#if defined(__APPLE__) || defined(__FreeBSD__)
+#include <util.h>   // forkpty
+#else
+#include <pty.h>    // forkpty, on glibc
+#endif
 
 #include <algorithm>
 #include <cstring>

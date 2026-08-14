@@ -192,6 +192,13 @@ int runConfig(std::vector<std::string> args, Config& config, Outcome& outcome) {
         if (!config.set(args[0], value, &error)) { std::cerr << error << "\n"; return 1; }
         if (!config.save(&error)) { std::cerr << error << "\n"; return 1; }
         std::cout << args[0] << " = " << maskIfSecret(args[0], value) << "\n";
+
+        // A few settings accept more than the schema can list — a theme can be
+        // a file. Those are checked after the fact, and saying so here beats
+        // letting the user find out when the colours do not change.
+        for (const auto& issue : config.issues()) {
+            if (issue.find(value) != std::string::npos) std::cerr << "  warning: " << issue << "\n";
+        }
         return 0;
     }
 
@@ -271,7 +278,8 @@ int runConfig(std::vector<std::string> args, Config& config, Outcome& outcome) {
             return 1;
         }
         if (!config.save(&error)) { std::cerr << error << "\n"; return 1; }
-        std::cout << "Default destination is now " << args[0] << "\n";
+        if (args[0].empty()) std::cout << "Cleared the default destination.\n";
+        else std::cout << "Default destination is now " << args[0] << "\n";
         return 0;
     }
 
@@ -322,8 +330,12 @@ int listCommands(const Config& config) {
     }
 
     for (const auto& command : registry.all()) {
-        std::cout << "  " << std::left << std::setw(18) << command.name << std::setw(38)
-                  << command.summary << command.origin << "\n";
+        std::string summary = command.summary;
+        // Plain "..." keeps the byte count equal to the column count, so the
+        // origins below still line up.
+        if (summary.size() > 40) summary = summary.substr(0, 37) + "...";
+        std::cout << "  " << std::left << std::setw(16) << command.name << std::setw(42)
+                  << summary << command.origin << "\n";
     }
     return 0;
 }

@@ -68,6 +68,9 @@ struct LineEdit {
 
 // Cuts a string to `width` display columns, adding an ellipsis when it had to.
 std::string elide(const std::string& text, int width);
+// The same, but keeping the end. For a path the last components are the ones
+// worth reading, so `…/apollo/src/ui` beats `/Users/someone/very/lo…`.
+std::string elidePath(const std::string& path, int width);
 // Display width of a UTF-8 string, in terminal columns.
 int displayWidth(const std::string& text);
 

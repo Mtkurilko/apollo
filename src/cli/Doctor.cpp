@@ -59,7 +59,10 @@ int doctor(Config& config) {
 
     const std::string workspace = paths::expandUser(config.general().workspace);
     std::error_code ec;
-    if (fs::is_directory(workspace, ec)) ok("workspace " + config.general().workspace);
+    if (fs::is_directory(workspace, ec)) {
+        ok("workspace " + config.general().workspace +
+           (workspace == config.general().workspace ? "" : "  (" + workspace + ")"));
+    }
     else bad("workspace does not exist: " + config.general().workspace,
              "apollo config set general.workspace ~");
 

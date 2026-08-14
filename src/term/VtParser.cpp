@@ -493,8 +493,11 @@ void VtParser::dispatchOsc() {
     }
 
     if (code == "133") {
-        if (rest.rfind("A", 0) == 0) screen_.markPrompt();
-        else if (rest.rfind("D", 0) == 0 && onCommandFinished) {
+        if (rest.rfind("A", 0) == 0) { screen_.markPrompt(); screen_.commandRunning = false; }
+        else if (rest.rfind("C", 0) == 0) screen_.commandRunning = true;
+        else if (rest.rfind("D", 0) == 0) {
+            screen_.commandRunning = false;
+            if (!onCommandFinished) return;
             const auto semicolon = rest.find(';');
             int status = 0;
             if (semicolon != std::string::npos) {

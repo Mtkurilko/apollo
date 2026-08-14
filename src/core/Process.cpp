@@ -270,6 +270,55 @@ bool detach(const std::vector<std::string>& argv, const std::string& workingDir)
     return WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
+namespace {
+
+// macOS, Wayland, X11, in that order. The first one present wins.
+const std::vector<std::vector<std::string>>& clipboardWriters() {
+    static const std::vector<std::vector<std::string>> commands = {
+        {"pbcopy"},
+        {"wl-copy"},
+        {"xclip", "-selection", "clipboard"},
+        {"xsel", "--clipboard", "--input"},
+    };
+    return commands;
+}
+
+const std::vector<std::vector<std::string>>& clipboardReaders() {
+    static const std::vector<std::vector<std::string>> commands = {
+        {"pbpaste"},
+        {"wl-paste", "--no-newline"},
+        {"xclip", "-selection", "clipboard", "-o"},
+        {"xsel", "--clipboard", "--output"},
+    };
+    return commands;
+}
+
+} // namespace
+
+bool clipboardWrite(const std::string& text) {
+    for (const auto& argv : clipboardWriters()) {
+        if (!which(argv[0])) continue;
+        return feed(argv, text).ok();
+    }
+    return false;
+}
+
+std::optional<std::string> clipboardRead() {
+    for (const auto& argv : clipboardReaders()) {
+        if (!which(argv[0])) continue;
+        const Result result = run(argv, std::chrono::seconds(3));
+        if (result.ok()) return result.out;
+    }
+    return std::nullopt;
+}
+
+bool openWithDesktop(const std::string& path) {
+    for (const char* opener : {"open", "xdg-open"}) {
+        if (which(opener)) return detach({opener, path});
+    }
+    return false;
+}
+
 std::string userShell() {
     if (const char* shell = std::getenv("SHELL"); shell && *shell) return shell;
     if (const passwd* pw = getpwuid(getuid()); pw && pw->pw_shell && *pw->pw_shell) {

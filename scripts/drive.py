@@ -194,6 +194,22 @@ def main():
 
     drain(settle)
     for key in keys:
+        # <sh:...> runs a shell command mid-session, for checking things that
+        # happen outside Apollo — a config file edited in another window, say.
+        if key.startswith("<sh:") and key.endswith(">"):
+            os.system(key[4:-1])
+            drain(1.2)
+            continue
+        # <size:COLSxROWS> resizes the window, which is the one thing a full
+        # screen program has to get right and the easiest thing to get wrong.
+        if key.startswith("<size:") and key.endswith(">"):
+            w, h = key[6:-1].split("x")
+            grid.rows, grid.cols = int(h), int(w)
+            grid.reset()
+            fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", int(h), int(w), 0, 0))
+            os.kill(pid, signal.SIGWINCH)
+            drain(1.0)
+            continue
         os.write(fd, KEYS.get(key, key).encode())
         drain(0.35)
 

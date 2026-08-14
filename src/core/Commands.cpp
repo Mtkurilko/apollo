@@ -3,6 +3,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <fstream>
 #include <cctype>
 #include <system_error>
 
@@ -102,6 +103,31 @@ bool CommandRegistry::addDeclared(const std::string& name,
     return true;
 }
 
+namespace {
+
+// A script can describe itself: the first comment line after the shebang
+// becomes the description in `apollo commands` and in the palette. It costs
+// the author one line and saves everyone else from guessing.
+std::string describeScript(const fs::path& script) {
+    std::ifstream in(script);
+    std::string line;
+    int examined = 0;
+    while (std::getline(in, line) && examined++ < 5) {
+        if (line.rfind("#!", 0) == 0) continue;
+        if (line.empty()) continue;
+        if (line[0] != '#') break;
+
+        std::string summary = line.substr(1);
+        const auto begin = summary.find_first_not_of(" \t");
+        if (begin == std::string::npos) continue;
+        summary = summary.substr(begin);
+        if (!summary.empty()) return summary;
+    }
+    return script.filename().string();
+}
+
+} // namespace
+
 int CommandRegistry::scanDirectory(const fs::path& dir) {
     std::error_code ec;
     if (!fs::is_directory(dir, ec)) return 0;
@@ -126,7 +152,7 @@ int CommandRegistry::scanDirectory(const fs::path& dir) {
 
         Command command;
         command.name = name;
-        command.summary = "Run " + paths::contractUser(script);
+        command.summary = describeScript(script);
         command.exec = script.string();
         command.kind = Command::Kind::Script;
         command.origin = paths::contractUser(script);

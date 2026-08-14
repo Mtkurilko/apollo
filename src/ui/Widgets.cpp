@@ -199,6 +199,29 @@ Element LineEdit::render(const Theme& theme, const std::string& placeholder, boo
     return hbox(std::move(parts));
 }
 
+std::string elidePath(const std::string& path, int width) {
+    if (width <= 0) return "";
+    if (displayWidth(path) <= width) return path;
+    if (width <= 2) return "…";
+
+    // Drop whole components from the front while it is still too long, then
+    // fall back to cutting mid-component if even the last one does not fit.
+    std::size_t at = 0;
+    while (at < path.size()) {
+        const std::size_t slash = path.find('/', at + 1);
+        if (slash == std::string::npos) break;
+        if (displayWidth(path.substr(slash)) + 1 <= width) {
+            at = slash;
+            break;
+        }
+        at = slash;
+    }
+
+    const std::string tail = path.substr(at);
+    if (displayWidth(tail) + 1 <= width) return "…" + tail;
+    return "…" + tail.substr(tail.size() - static_cast<std::size_t>(width - 1));
+}
+
 Element panel(const std::string& title,
               Element content,
               bool focused,
@@ -218,11 +241,15 @@ Element panel(const std::string& title,
         header.push_back(text(" " + rightLabel + " ") | color(toFtx(theme.muted)));
     }
 
-    Element body = vbox({
-        decoration.titleBar ? hbox(std::move(header)) : text(""),
-        decoration.titleBar ? separator() | color(edge) : text(""),
-        std::move(content) | flex,
-    });
+    // With the title bar off, those rows must not exist at all: emitting empty
+    // text() elements would leave two blank lines where the title used to be.
+    Elements rows;
+    if (decoration.titleBar) {
+        rows.push_back(hbox(std::move(header)));
+        rows.push_back(separator() | color(edge));
+    }
+    rows.push_back(std::move(content) | flex);
+    Element body = vbox(std::move(rows));
 
     if (decoration.border == "none") return body;
     return body | borderStyled(borderStyle(decoration.border), edge);
@@ -267,18 +294,26 @@ Element highlighted(const std::string& value,
 
 Element modal(Element content, const Theme& theme, const DecorationSettings& decoration,
               int width, int height) {
-    // clear_under wipes whatever is beneath before drawing: without it the
-    // panes below show through wherever the modal has a filler rather than
-    // text, and their borders cut across it.
+    // clear_under wipes whatever is beneath before drawing. Without it the
+    // panes show through wherever the modal has a filler rather than text, and
+    // their borders cut across it.
     Element framed = clear_under(std::move(content) | bgcolor(toFtx(theme.surface))) |
                      borderStyled(borderStyle(decoration.border), toFtx(theme.accent));
-    framed = clear_under(std::move(framed));
     if (width > 0) framed = std::move(framed) | size(WIDTH, EQUAL, width);
     if (height > 0) framed = std::move(framed) | size(HEIGHT, LESS_THAN, height);
 
+    // A one cell ring of cleared space around the frame. FTXUI merges adjacent
+    // box-drawing characters, so without the gap the modal's border fuses with
+    // the pane borders behind it and reads as part of the layout.
+    Element ringed = clear_under(vbox({
+        text(""),
+        hbox({text(" "), std::move(framed), text(" ")}),
+        text(""),
+    }));
+
     return vbox({
         filler(),
-        hbox({filler(), std::move(framed), filler()}),
+        hbox({filler(), std::move(ringed), filler()}),
         filler(),
     });
 }

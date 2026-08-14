@@ -136,12 +136,18 @@ public:
         std::string defaultValue;
         std::string summary;
         std::vector<std::string> choices;
+        // True when `choices` are suggestions rather than the only options —
+        // a theme can also be a file the user wrote.
+        bool openChoices = false;
         int min = 0, max = 0; // for Int
 
         std::string typeName() const;
     };
     static const std::vector<Setting>& schema();
     static const Setting* setting(const std::string& path);
+    // Every theme available right now: the built-in ones, plus any *.conf in
+    // ~/.apollo/themes.
+    static std::vector<std::string> availableThemes();
     // Current value, falling back to the schema default.
     std::string valueOf(const Setting& setting) const;
     // Empty when the value is acceptable, otherwise the reason it is not.
@@ -153,6 +159,9 @@ public:
 private:
     void derive();
     void deriveTheme();
+    // Reads ~/.apollo/themes/<name>.conf: an optional `base = <built-in>` plus
+    // a `colors { }` block. Returns nullopt when there is no such file.
+    std::optional<Theme> loadThemeFile(const std::string& name);
     void deriveBinds();
     void note(const std::string& issue);
 

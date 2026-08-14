@@ -531,7 +531,10 @@ void Screen::reflow(int newCols) {
     // part of the live screen rather than folding it into history.
     int cursorLogical = -1;
     int cursorOffset = 0;
-    for (int y = 0; y < rows_; ++y) {
+    // Walk the grid as it actually is, not as it is about to become: when the
+    // window loses rows at the same time as it changes width, iterating to the
+    // new row count would silently drop the bottom of the screen.
+    for (int y = 0; y < static_cast<int>(grid_.size()); ++y) {
         const Row& row = grid_[static_cast<std::size_t>(y)];
         absorb(row, !continuing);
         if (y == y_) {
@@ -607,7 +610,6 @@ void Screen::resize(int rows, int cols) {
     if (rows == rows_ && cols == cols_) return;
 
     const bool widthChanged = cols != cols_;
-    const int oldRows = rows_;
     rows_ = rows;
 
     if (alternate_) {
@@ -619,9 +621,8 @@ void Screen::resize(int rows, int cols) {
         savedGrid_.resize(static_cast<std::size_t>(rows_));
         for (auto& row : savedGrid_) row.ensure(cols_);
     } else if (widthChanged) {
-        grid_.resize(static_cast<std::size_t>(std::max(oldRows, rows_)));
-        for (auto& row : grid_) row.ensure(std::max(cols_, cols));
-        grid_.resize(static_cast<std::size_t>(rows_));
+        // reflow() rebuilds both the history and the grid at the new width and
+        // sizes the grid to rows_ itself, so the old grid is left intact here.
         reflow(cols);
         cols_ = cols;
     } else {

@@ -98,6 +98,7 @@ bool Session::pump() {
 
     bool changed = false;
     char buffer[65536];
+    const int historyBefore = screen_.historyLines();
 
     // Bounded so one very chatty program (`yes`, a big `cat`) cannot starve the
     // rest of the frame. Anything left over is picked up next time round.
@@ -116,8 +117,16 @@ bool Session::pump() {
         pty_.write(replies);
     }
     if (changed && scrollOffset_ > 0) {
-        // Keep the view anchored to the same text while output scrolls past.
-        scrollOffset_ = std::min(scrollOffset_, screen_.historyLines());
+        // Keep the view on the same text while new output arrives. Without
+        // adding back the lines that moved into history, whatever you had
+        // scrolled to would slide off the top as the program kept printing.
+        const int pushed = screen_.historyLines() - historyBefore;
+        scrollOffset_ = std::clamp(scrollOffset_ + pushed, 0, screen_.historyLines());
+    }
+
+    if (screen_.commandRunning != wasRunning_) {
+        wasRunning_ = screen_.commandRunning;
+        if (wasRunning_) commandStarted_ = std::chrono::steady_clock::now();
     }
     if (pty_.poll()) changed = true;
     return changed;
@@ -279,6 +288,11 @@ std::vector<int> Session::search(const std::string& needle) const {
         if (lowercase(lineText(line)).find(wanted) != std::string::npos) hits.push_back(line);
     }
     return hits;
+}
+
+std::chrono::steady_clock::duration Session::commandElapsed() const {
+    if (!screen_.commandRunning) return std::chrono::steady_clock::duration::zero();
+    return std::chrono::steady_clock::now() - commandStarted_;
 }
 
 std::string Session::selectedText() const {

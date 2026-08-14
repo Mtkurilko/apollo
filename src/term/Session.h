@@ -9,6 +9,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <string>
@@ -92,6 +93,11 @@ public:
     Selection selection;
     std::string selectedText() const;
 
+    // How long the current command has been running, when the shell reports
+    // its boundaries (OSC 133). Zero when nothing is running.
+    std::chrono::steady_clock::duration commandElapsed() const;
+    bool commandRunning() const { return screen_.commandRunning; }
+
     // Called from the reader thread when bytes arrive. Must be cheap and
     // thread safe: it exists to wake the UI loop up, nothing more.
     void setWakeup(std::function<void()> wake);
@@ -112,6 +118,8 @@ private:
 
     int scrollOffset_ = 0;
     bool started_ = false;
+    bool wasRunning_ = false;
+    std::chrono::steady_clock::time_point commandStarted_{};
 };
 
 } // namespace apollo::term

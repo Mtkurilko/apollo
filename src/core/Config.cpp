@@ -73,8 +73,10 @@ const std::vector<Config::Setting>& Config::schema() {
         s.push_back(flag("general.follow_cwd", true, "The browser follows the shell's directory"));
         s.push_back(flag("general.confirm_quit", false, "Ask before leaving with a command still running"));
 
-        s.push_back(choice("decoration.theme", "apollo",
-                           Theme::builtinNames(), "Colour scheme"));
+        Setting theme = choice("decoration.theme", "apollo", Theme::builtinNames(),
+                               "Colour scheme, built in or a file in ~/.apollo/themes");
+        theme.openChoices = true;
+        s.push_back(std::move(theme));
         s.push_back(choice("decoration.border", "rounded",
                            {"rounded", "light", "heavy", "double", "none"}, "Pane border style"));
         s.push_back(number("decoration.gaps", 1, 0, 4, "Blank columns between panes"));
@@ -148,6 +150,7 @@ std::string Config::validate(const Setting& s, const std::string& value) {
             return "";
         }
         case Type::Enum: {
+            if (s.openChoices) return "";
             if (std::find(s.choices.begin(), s.choices.end(), ConfigFile::trim(value)) ==
                 s.choices.end()) {
                 std::string options;
@@ -518,12 +521,71 @@ void Config::derive() {
     }
 }
 
+std::optional<Theme> Config::loadThemeFile(const std::string& name) {
+    if (name.empty() || name.find('/') != std::string::npos) return std::nullopt;
+
+    const fs::path file = paths::themesDir() / (name + ".conf");
+    std::error_code ec;
+    if (!fs::exists(file, ec)) return std::nullopt;
+
+    ConfigFile source;
+    if (!source.load(file)) {
+        for (const auto& d : source.diagnostics()) note(d.format());
+    }
+
+    // A theme file says which built-in it starts from and then overrides
+    // whichever colours it cares about, so a two line file is a valid theme.
+    const std::string base = source.get("base", "apollo");
+    Theme theme = Theme::builtin(base).value_or(*Theme::builtin("apollo"));
+    if (!Theme::builtin(base)) {
+        note(paths::contractUser(file) + ": unknown base theme '" + base + "'");
+    }
+
+    if (const ConfigNode* colors = source.section("colors")) {
+        for (const auto& entry : colors->entries) {
+            if (!theme.setColor(entry.key, entry.value)) {
+                note(paths::contractUser(file) + ": '" + entry.key + "' is not a colour Apollo sets");
+            }
+        }
+    }
+    theme.name = name;
+    theme.rebuildRamp();
+    return theme;
+}
+
+std::vector<std::string> Config::availableThemes() {
+    std::vector<std::string> names = Theme::builtinNames();
+
+    std::error_code ec;
+    if (fs::is_directory(paths::themesDir(), ec)) {
+        std::vector<std::string> custom;
+        for (const auto& entry : fs::directory_iterator(paths::themesDir(), ec)) {
+            if (ec) break;
+            if (!entry.is_regular_file(ec) || entry.path().extension() != ".conf") continue;
+            const std::string name = entry.path().stem().string();
+            if (std::find(names.begin(), names.end(), name) == names.end()) custom.push_back(name);
+        }
+        std::sort(custom.begin(), custom.end());
+        names.insert(names.end(), custom.begin(), custom.end());
+    }
+    return names;
+}
+
 void Config::deriveTheme() {
     if (auto found = Theme::builtin(decoration_.theme)) {
         theme_ = *found;
+    } else if (auto custom = loadThemeFile(decoration_.theme)) {
+        theme_ = *custom;
     } else {
         theme_ = *Theme::builtin("apollo");
-        note("unknown theme '" + decoration_.theme + "'; using apollo");
+        note("unknown theme '" + decoration_.theme + "'; using apollo. Built-in themes: " +
+             [] {
+                 std::string list;
+                 for (const auto& name : Theme::builtinNames()) {
+                     list += (list.empty() ? "" : ", ") + name;
+                 }
+                 return list;
+             }());
     }
 
     if (const ConfigNode* colors = file_.section("colors")) {

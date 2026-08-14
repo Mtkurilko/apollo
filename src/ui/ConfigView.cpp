@@ -180,15 +180,19 @@ void ConfigView::cycleChoice(int direction) {
         applyChange(setting.path, std::to_string(std::clamp(value + direction, setting.min, setting.max)));
         return;
     }
-    if (setting.choices.empty()) return;
+    // Themes can also be files the user wrote, so the list is asked for rather
+    // than taken from the schema.
+    const std::vector<std::string> choices = setting.path == "decoration.theme"
+                                                 ? Config::availableThemes()
+                                                 : setting.choices;
+    if (choices.empty()) return;
 
     const std::string current = config_.valueOf(setting);
-    auto at = std::find(setting.choices.begin(), setting.choices.end(), current);
-    int index = at == setting.choices.end() ? 0
-                                            : static_cast<int>(at - setting.choices.begin());
-    const int count = static_cast<int>(setting.choices.size());
-    index = (index + direction % count + count) % count;
-    applyChange(setting.path, setting.choices[static_cast<std::size_t>(index)]);
+    const auto at = std::find(choices.begin(), choices.end(), current);
+    int index = at == choices.end() ? 0 : static_cast<int>(at - choices.begin());
+    const int count = static_cast<int>(choices.size());
+    index = ((index + direction) % count + count) % count;
+    applyChange(setting.path, choices[static_cast<std::size_t>(index)]);
 }
 
 void ConfigView::remove() {
@@ -393,10 +397,9 @@ bool ConfigView::onKey(const KeyChord& chord, const std::string& raw) {
     if (chord.key == "e") {
         // Hand the whole file to the user's editor, for anything this screen
         // does not cover.
-        const std::string editor = config_.general().editor.empty()
-                                       ? (std::getenv("EDITOR") ? std::getenv("EDITOR") : "")
-                                       : config_.general().editor;
-        flash_ = editor.empty() ? "set general.editor to use this" : "opening " + editor;
+        if (!onEditExternally) return true;
+        close();
+        onEditExternally();
         return true;
     }
     return true; // the config screen owns every key while it is up
@@ -466,8 +469,11 @@ Element ConfigView::renderSettings(Page page, const Theme& theme, int width, int
         const Config::Setting& setting = *settings[static_cast<std::size_t>(row_)];
         std::string detail = setting.summary;
         if (setting.type == Config::Setting::Type::Enum) {
+            const std::vector<std::string> choices = setting.path == "decoration.theme"
+                                                         ? Config::availableThemes()
+                                                         : setting.choices;
             std::string options;
-            for (const auto& choice : setting.choices) {
+            for (const auto& choice : choices) {
                 options += (options.empty() ? "" : " · ") + choice;
             }
             detail += "  —  " + options;
@@ -720,6 +726,8 @@ Element ConfigView::render(const Theme& theme, const DecorationSettings& decorat
         footer.push_back(hint("↑↓", "move", theme));
         footer.push_back(text("  "));
         footer.push_back(hint("Enter", editing_ ? "save" : "change", theme));
+        footer.push_back(text("  "));
+        footer.push_back(hint("e", "editor", theme));
         footer.push_back(text("  "));
         footer.push_back(hint("Esc", "close", theme));
     }

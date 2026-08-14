@@ -34,6 +34,9 @@ public:
     // Fired after anything is written, so the app can pick up a new theme or
     // re-derive the command table.
     std::function<void()> onChanged;
+    // `e` hands the whole file to the user's editor; the app owns the terminal
+    // it has to run in.
+    std::function<void()> onEditExternally;
 
 private:
     enum class Page { General, Appearance, Terminal, Browser, Keys, Commands, Connections, Problems, About };

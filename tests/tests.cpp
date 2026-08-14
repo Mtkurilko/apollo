@@ -4,6 +4,7 @@
 // language, key decoding, the terminal grid and the escape parser — and those
 // are exactly the parts that would be miserable to check by hand.
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -388,6 +389,23 @@ void testReflow() {
     }
     expect(joined, std::string("aaaaaaaaaabbbbbbbbbbcc"), "narrowing keeps every character too");
 
+    // Losing rows and changing width at the same time used to walk the new,
+    // smaller row count over the old grid and drop whatever was below it.
+    Screen shrinking(6, 12, 100);
+    VtParser shrinkParser(shrinking);
+    write(shrinkParser, "alpha\r\nbravo\r\ncharlie\r\ndelta\r\necho\r\nfoxtrot");
+    shrinking.resize(3, 9);
+    std::string kept;
+    for (int i = 0; i < shrinking.totalLines(); ++i) {
+        const Row& row = shrinking.lineAt(i);
+        for (const auto& cell : row.cells) {
+            if (cell.width && cell.cp != U' ') kept.push_back(static_cast<char>(cell.cp));
+        }
+    }
+    check(kept.find("alpha") != std::string::npos, "shrinking keeps the oldest line");
+    check(kept.find("foxtrot") != std::string::npos, "shrinking keeps the newest line");
+    check(kept.find("charlie") != std::string::npos, "and everything between");
+
     // A resize with the same width must not disturb anything.
     Screen stable(4, 12, 100);
     VtParser stableParser(stable);
@@ -484,7 +502,12 @@ void testConfig() {
     editable.loadText(Config::defaultText());
     check(editable.set("decoration.theme", "nord"), "sets a valid value");
     expect(editable.decoration().theme, std::string("nord"), "the change is visible immediately");
-    check(!editable.set("decoration.theme", "chartreuse"), "refuses a value outside the choices");
+    check(!editable.set("decoration.border", "squiggly"), "refuses a value outside the choices");
+    // A theme may also be a file the user wrote, so the name is open — but an
+    // unknown one still has to be reported rather than silently ignored.
+    check(editable.set("decoration.theme", "chartreuse"), "accepts an open-ended choice");
+    check(!editable.issues().empty(), "and reports that it does not exist");
+    check(editable.set("decoration.theme", "nord"), "back to a real theme");
     check(!editable.set("general.nonsense", "x"), "refuses an unknown setting");
     check(!editable.set("decoration.gaps", "99"), "refuses a number outside its range");
 
@@ -562,6 +585,35 @@ void testMigration() {
     std::filesystem::remove_all(dir);
 }
 
+void testThemeFiles() {
+    section("theme files");
+
+    const auto themes = std::filesystem::path(std::getenv("APOLLO_CONFIG_DIR")) / "themes";
+    std::filesystem::create_directories(themes);
+    {
+        std::ofstream out(themes / "sunset.conf");
+        out << "base = midnight\n\ncolors {\n    accent = #ff8a5b\n}\n";
+    }
+
+    Config config;
+    config.loadText("decoration {\n    theme = sunset\n}\n");
+    expect(config.theme().name, std::string("sunset"), "a theme file is found by name");
+    check(config.theme().accent == Rgb{255, 138, 91}, "its colours are applied");
+    check(config.theme().fg == Theme::builtin("midnight")->fg, "the base theme shows through");
+    check(config.issues().empty(), "and it loads without complaint");
+
+    const auto available = Config::availableThemes();
+    check(std::find(available.begin(), available.end(), "sunset") != available.end(),
+          "it is offered alongside the built-in themes");
+
+    Config missing;
+    missing.loadText("decoration {\n    theme = nowhere\n}\n");
+    check(!missing.issues().empty(), "a theme that is neither built in nor a file is reported");
+    expect(missing.theme().name, std::string("apollo"), "and the default is used instead");
+
+    std::filesystem::remove_all(themes);
+}
+
 void testPaths() {
     section("paths");
 
@@ -575,6 +627,13 @@ void testPaths() {
 } // namespace
 
 int main() {
+    // Never touch the real ~/.apollo: the tests write themes and read the
+    // commands directory, and somebody's actual settings are not a fixture.
+    const auto sandbox = std::filesystem::temp_directory_path() / "apollo-tests-home";
+    std::filesystem::remove_all(sandbox);
+    std::filesystem::create_directories(sandbox);
+    ::setenv("APOLLO_CONFIG_DIR", sandbox.c_str(), 1);
+
     std::cout << "apollo tests\n";
 
     testPaths();
@@ -586,6 +645,9 @@ int main() {
     testReflow();
     testConfig();
     testMigration();
+    testThemeFiles();
+
+    std::filesystem::remove_all(sandbox);
 
     std::cout << "\n" << (checks - failures) << "/" << checks << " checks passed\n";
     if (failures) std::cout << failures << " FAILED\n";

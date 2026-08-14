@@ -48,12 +48,6 @@ std::string decodeBase64(const std::string& text) {
     return out;
 }
 
-std::string shortPath(const fs::path& path) {
-    const std::string full = paths::contractUser(path);
-    if (full.size() <= 40) return full;
-    return "…" + full.substr(full.size() - 39);
-}
-
 } // namespace
 
 App::App(Config& config, Options options)
@@ -86,7 +80,7 @@ App::App(Config& config, Options options)
             return;
         }
         // No editor configured: hand it to the desktop rather than guessing.
-        if (!process::detach({"open", path.string()})) {
+        if (!process::openWithDesktop(path.string())) {
             say("could not open " + path.filename().string(), true);
         } else {
             say("opened " + path.filename().string());
@@ -94,6 +88,7 @@ App::App(Config& config, Options options)
     };
 
     configView_.onChanged = [this] { applyConfig(); };
+    configView_.onEditExternally = [this] { act("edit_config", {}); };
     onboard_.onChanged = [this] { applyConfig(); };
     onboard_.onFinished = [this] {
         applyConfig();
@@ -184,8 +179,7 @@ bool App::newTab(const Connection* connection, const std::string& initialCommand
         if (!config_.terminal().osc52Clipboard) return;
         const std::string payload = decodeBase64(base64);
         if (payload.empty()) return;
-        process::feed({"pbcopy"}, payload);
-        say("clipboard set by the terminal");
+        if (process::clipboardWrite(payload)) say("clipboard set by the terminal");
     };
 
     tabs_.push_back(std::move(session));
@@ -238,7 +232,12 @@ App::Layout App::measure() const {
     }
 
     if (stacked_) {
-        const int browserHeight = std::clamp(available / 3, 5, 20);
+        // A third of the height, but never so little that the browser is a
+        // single row of chrome, and never so much that the terminal is.
+        int browserHeight = std::clamp(available / 3, frameV + 6, frameV + 20);
+        browserHeight = std::min(browserHeight, available - decoration.gaps - frameV - 6);
+        browserHeight = std::max(browserHeight, frameV + 1);
+
         layout.browserWidth = layout.width;
         layout.browserRows = std::max(1, browserHeight - frameV);
         layout.terminalCols = std::max(20, layout.width - frameH);
@@ -264,13 +263,12 @@ void App::say(const std::string& message, bool isError) {
 
 void App::copyToClipboard(const std::string& text) {
     if (text.empty()) return;
-    if (process::feed({"pbcopy"}, text).ok()) say("copied " + std::to_string(text.size()) + " bytes");
-    else say("could not reach the clipboard", true);
+    if (process::clipboardWrite(text)) say("copied " + std::to_string(text.size()) + " bytes");
+    else say("no clipboard tool found (pbcopy, wl-copy, xclip or xsel)", true);
 }
 
 std::string App::clipboard() const {
-    const auto result = process::run({"pbpaste"}, std::chrono::seconds(3));
-    return result.ok() ? result.out : "";
+    return process::clipboardRead().value_or("");
 }
 
 std::string App::keyHintFor(const std::string& action) const {
@@ -337,6 +335,20 @@ void App::act(const std::string& action, const std::vector<std::string>& args) {
         return;
     }
 
+    if (action == "open_config") { configView_.open(); return; }
+    if (action == "setup") { onboard_.start(); return; }
+    if (action == "help") { helpOpen_ = true; return; }
+    if (action == "quit") { quitting_ = true; screen_.Exit(); return; }
+    if (action == "reload_config") {
+        config_.load();
+        applyConfig();
+        say(config_.issues().empty()
+                ? "reloaded " + paths::contractUser(config_.path())
+                : std::to_string(config_.issues().size()) + " problems — see the config screen",
+            !config_.issues().empty());
+        return;
+    }
+
     if (!session) return;
 
     if (action == "scroll_up") { session->scrollBy(config_.terminal().scrollLines); return; }
@@ -364,8 +376,6 @@ void App::act(const std::string& action, const std::vector<std::string>& args) {
         return;
     }
 
-    if (action == "open_config") { configView_.open(); return; }
-    if (action == "setup") { onboard_.start(); return; }
     if (action == "edit_config") {
         const char* fromEnv = std::getenv("EDITOR");
         const std::string editor = !config_.general().editor.empty() ? config_.general().editor
@@ -376,17 +386,6 @@ void App::act(const std::string& action, const std::vector<std::string>& args) {
         focus_ = Focus::Terminal;
         return;
     }
-    if (action == "reload_config") {
-        config_.load();
-        applyConfig();
-        say(config_.issues().empty()
-                ? "reloaded " + paths::contractUser(config_.path())
-                : std::to_string(config_.issues().size()) + " problems — see the config screen",
-            !config_.issues().empty());
-        return;
-    }
-    if (action == "help") { helpOpen_ = true; return; }
-
     if (action == "connect") {
         std::string error;
         const auto conn = config_.resolveConnection(argument, error);
@@ -424,7 +423,6 @@ void App::act(const std::string& action, const std::vector<std::string>& args) {
         session->sendText("cd " + ssh::quoteRemote(target.string()) + "\r");
         return;
     }
-    if (action == "quit") { quitting_ = true; screen_.Exit(); return; }
 }
 
 bool App::runBind(const KeyChord& chord) {
@@ -460,7 +458,7 @@ void App::openPalette() {
                          [this, name = conn.name] { act("connect", {name}); }});
     }
 
-    for (const auto& name : Theme::builtinNames()) {
+    for (const auto& name : Config::availableThemes()) {
         items.push_back({"Theme: " + name, "Switch the colour scheme", "theme", "",
                          [this, name] {
                              std::string problem;
@@ -493,6 +491,12 @@ void App::tick() {
     }
     if (browserVisible_) browser_.refreshIfStale(config_.browser());
 
+    for (auto& session : tabs_) {
+        if (!session->screen().bellPending) continue;
+        session->screen().bellPending = false;
+        if (config_.terminal().bell) say("bell — " + session->title());
+    }
+
     for (auto& session : tabs_) session->pump();
 
     // The shell told us where it is; follow it.
@@ -508,9 +512,21 @@ void App::tick() {
 
     if (!status_.empty() && now > statusUntil_) status_.clear();
 
-    // A shell that exited closes its tab, the way a terminal window would.
+    // A session that exited cleanly closes its tab, the way a terminal window
+    // closes when you type `exit`. One that failed stays put with its output
+    // on screen — an ssh that could not connect has something to say, and
+    // vanishing would take the message with it.
     for (int i = static_cast<int>(tabs_.size()) - 1; i >= 0; --i) {
-        if (!tabs_[static_cast<std::size_t>(i)]->running()) closeTab(i);
+        auto& session = tabs_[static_cast<std::size_t>(i)];
+        if (session->running()) continue;
+
+        if (session->exitCode() == 0 || tabs_.size() > 1) {
+            closeTab(i);
+        } else if (status_.empty()) {
+            say(session->title() + " exited " + std::to_string(session->exitCode()) +
+                    " — Leader C for a shell, Leader Q to leave",
+                true);
+        }
     }
 }
 
@@ -707,45 +723,88 @@ Element App::renderTabs() {
 
 Element App::renderStatusBar(const Layout& layout) {
     const term::Session* session = active();
+    const int width = layout.width;
 
     Elements left;
     if (session && !session->connection().empty()) {
         left.push_back(text(" " + session->connection() + " ") |
                        bgcolor(toFtx(theme_->accentAlt)) | color(toFtx(theme_->bg)) | bold);
-    } else {
+    } else if (width >= 60) {
         left.push_back(text(" local ") | bgcolor(toFtx(theme_->surface)) |
                        color(toFtx(theme_->muted)));
     }
-    left.push_back(text(" " + shortPath(browser_.path()) + " ") | color(toFtx(theme_->fg)));
+
+    // The path gets whatever the fixed pieces leave. Everything optional is
+    // dropped as the window narrows, rather than every piece being squeezed
+    // until none of them is readable.
+    const bool showLeaderHint = width >= 76;
+    const bool showBrowserStats = width >= 92;
+    int reserved = 2;
+    if (showLeaderHint) reserved += static_cast<int>(
+        config_.general().leader.describe().size()) + 8;
+    if (showBrowserStats) reserved += static_cast<int>(browser_.statusLine().size()) + 2;
+    if (session && !session->connection().empty()) {
+        reserved += static_cast<int>(session->connection().size()) + 2;
+    } else if (width >= 60) {
+        reserved += 7;
+    }
+
+    left.push_back(text(" " + elidePath(paths::contractUser(browser_.path()),
+                                        std::max(8, width - reserved)) +
+                        " ") |
+                   color(toFtx(theme_->fg)));
 
     if (leaderArmed_) {
         left.push_back(text(" " + config_.general().leader.describe() + "… ") |
                        bgcolor(toFtx(theme_->warning)) | color(toFtx(theme_->bg)) | bold);
     }
+
+    if (session && session->commandRunning()) {
+        const auto elapsed =
+            std::chrono::duration_cast<std::chrono::seconds>(session->commandElapsed()).count();
+        // The shell only reports this when shell integration is installed, so
+        // it is quietly absent rather than wrong when it is not.
+        static const char* frames[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
+        const std::string spinner =
+            config_.decoration().animate
+                ? std::string(frames[(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          std::chrono::steady_clock::now().time_since_epoch())
+                                          .count() /
+                                      100) %
+                                     10])
+                : "•";
+        left.push_back(text(spinner + " running") | color(toFtx(theme_->accent)));
+        if (elapsed > 1) {
+            left.push_back(text(" " + std::to_string(elapsed) + "s") | color(toFtx(theme_->muted)));
+        }
+        left.push_back(text(" "));
+    }
+
     if (session && session->scrolled()) {
         const int history = session->screen().historyLines();
         const int percent = history > 0 ? (history - session->scrollOffset()) * 100 / history : 100;
-        left.push_back(text(" scrollback " + std::to_string(percent) + "% ") |
+        left.push_back(text("scrollback " + std::to_string(percent) + "% ") |
                        color(toFtx(theme_->warning)));
     }
 
     left.push_back(filler());
 
     if (!status_.empty()) {
-        left.push_back(text(status_ + "  ") |
+        left.push_back(text(elide(status_, std::max(10, width / 2)) + "  ") |
                        color(toFtx(statusIsError_ ? theme_->error : theme_->success)));
     } else if (!config_.issues().empty()) {
         left.push_back(text(std::to_string(config_.issues().size()) + " config problems  ") |
                        color(toFtx(theme_->warning)));
-    } else {
+    } else if (showBrowserStats) {
         left.push_back(text(browser_.statusLine() + "  ") | color(toFtx(theme_->muted)));
     }
 
-    left.push_back(text(config_.general().leader.describe() + " Space ") |
-                   color(toFtx(theme_->muted)));
+    if (showLeaderHint) {
+        left.push_back(text(config_.general().leader.describe() + " Space ") |
+                       color(toFtx(theme_->muted)));
+    }
 
-    return hbox(std::move(left)) | bgcolor(toFtx(theme_->bg)) |
-           size(WIDTH, EQUAL, layout.width);
+    return hbox(std::move(left)) | bgcolor(toFtx(theme_->bg)) | size(WIDTH, EQUAL, width);
 }
 
 Element App::renderSearch() {
@@ -766,53 +825,78 @@ Element App::renderSearch() {
 }
 
 Element App::renderHelp(int width, int height) {
+    const int panelWidth = std::clamp(width - 6, 56, 100);
+    const int inner = panelWidth - 2;
+    // Two columns when there is room for both, one when there is not.
+    const int columns = inner >= 84 ? 2 : 1;
+    const int columnWidth = inner / columns;
+    const int chordWidth = 15;
+
     Elements rows;
     rows.push_back(text(" Keys") | bold | color(toFtx(theme_->accent)));
     rows.push_back(text(""));
-    rows.push_back(text("  Apollo's own keys hide behind the leader, currently " +
-                        config_.general().leader.describe() + ". Press it, let go,") |
+    rows.push_back(text(elide("  Apollo's keys hide behind the leader, currently " +
+                                  config_.general().leader.describe() +
+                                  ". Press it, let go, then the key.",
+                              inner)) |
                    color(toFtx(theme_->muted)));
-    rows.push_back(text("  then the key. Everything else belongs to whatever is running.") |
+    rows.push_back(text(elide("  Everything else belongs to whatever is running in the terminal.",
+                              inner)) |
                    color(toFtx(theme_->muted)));
     rows.push_back(text(""));
 
-    // Two columns of binds, sorted so the leader ones read as a group.
     std::vector<Bind> binds = config_.binds();
-    std::stable_sort(binds.begin(), binds.end(), [](const Bind& a, const Bind& b) {
-        return a.chord < b.chord;
-    });
+    std::stable_sort(binds.begin(), binds.end(),
+                     [](const Bind& a, const Bind& b) { return a.chord < b.chord; });
 
-    const int perColumn = std::max(1, static_cast<int>(binds.size() + 1) / 2);
+    const int perColumn =
+        (static_cast<int>(binds.size()) + columns - 1) / std::max(1, columns);
     for (int i = 0; i < perColumn; ++i) {
-        Elements columns;
-        for (int c = 0; c < 2; ++c) {
+        Elements cells;
+        for (int c = 0; c < columns; ++c) {
             const int index = i + c * perColumn;
             if (index >= static_cast<int>(binds.size())) {
-                columns.push_back(text("") | flex);
+                cells.push_back(text(std::string(static_cast<std::size_t>(columnWidth), ' ')));
                 continue;
             }
             const Bind& bind = binds[static_cast<std::size_t>(index)];
             const ActionInfo* action = findAction(bind.action);
-            std::string chord = bind.chord.describe();
-            chord.resize(std::max<std::size_t>(chord.size(), 16), ' ');
-            columns.push_back(hbox({
-                                  text("  " + chord) | color(toFtx(theme_->accent)),
-                                  text(action ? action->summary : bind.describeAction()) |
-                                      color(toFtx(theme_->fg)),
-                              }) |
-                              flex);
+
+            // Fixed widths rather than flex: letting FTXUI shrink these cuts
+            // words in half and the columns stop lining up.
+            std::string chord = elide(bind.chord.describe(), chordWidth);
+            chord.resize(static_cast<std::size_t>(chordWidth) +
+                             (chord.size() - displayWidth(chord)),
+                         ' ');
+            std::string what = action ? action->summary : bind.describeAction();
+            what = elide(what, columnWidth - chordWidth - 3);
+
+            cells.push_back(hbox({
+                text("  " + chord) | color(toFtx(theme_->accent)),
+                text(what) | color(toFtx(theme_->fg)),
+                filler(),
+            }) | size(WIDTH, EQUAL, columnWidth));
         }
-        rows.push_back(hbox(std::move(columns)));
+        rows.push_back(hbox(std::move(cells)));
     }
 
     rows.push_back(text(""));
     rows.push_back(hbox({text("  Mouse ") | color(toFtx(theme_->muted)),
-                         text("drag to select, wheel to scroll, double click to open")}));
+                         text("drag selects, the wheel scrolls, double click opens")}));
+    if (!registry_.all().empty()) {
+        rows.push_back(text(""));
+        rows.push_back(text("  Your commands") | bold | color(toFtx(theme_->accent)));
+        for (const auto& command : registry_.all()) {
+            std::string name = command.name;
+            name.resize(std::max<std::size_t>(name.size(), 14), ' ');
+            rows.push_back(hbox({text("  " + name) | color(toFtx(theme_->accent)),
+                                 text(elide(command.summary, inner - 18))}));
+        }
+    }
     rows.push_back(text(""));
     rows.push_back(text("  Any key closes this.") | color(toFtx(theme_->muted)));
 
-    return modal(vbox(std::move(rows)), *theme_, config_.decoration(),
-                 std::clamp(width - 6, 60, 100), height - 4);
+    return modal(vbox(std::move(rows)), *theme_, config_.decoration(), panelWidth, height - 2);
 }
 
 Element App::render() {
@@ -860,7 +944,7 @@ Element App::render() {
         body = std::move(terminalPane);
     } else {
         Element browserPane =
-            panel(shortPath(browser_.path()),
+            panel(elidePath(paths::contractUser(browser_.path()), layout.browserWidth - 6),
                   browser_.render(*theme_, config_.browser(), focus_ == Focus::Browser,
                                   layout.browserRows, layout.browserWidth - 2),
                   focus_ == Focus::Browser, *theme_, decoration);
@@ -941,6 +1025,7 @@ int App::run() {
         }
     }
     if (!newTab(connection)) return 1;
+    if (connection) say("connecting to " + connection->describe() + "…");
 
     if (options_.runSetup) onboard_.start();
     if (options_.openConfig) configView_.open();

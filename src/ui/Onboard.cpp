@@ -148,8 +148,9 @@ bool Onboard::writeShellIntegration(std::string& where) {
         return true;
     }
 
-    // Don't add the line twice if the wizard is run again.
-    const std::string marker = "apollo/shell-integration.sh";
+    // Don't add the line twice if the wizard is run again. Match on the real
+    // path, not a guess at it: the config directory is overridable.
+    const std::string marker = script.string();
     {
         std::ifstream existing(rc);
         std::string line;
@@ -412,24 +413,28 @@ Element Onboard::render(const Theme& theme, const DecorationSettings& decoration
 
         case Step::Done:
             stepNumber = 5;
+            const int room = std::max(20, panelWidth - 14);
+            const auto row = [&](const std::string& label, const std::string& value) {
+                return hbox({text("  " + label + "  ") | color(toFtx(theme.muted)),
+                             text(elide(value, room))});
+            };
+            const auto keyRow = [&](const std::string& keys, const std::string& what) {
+                return hbox({text("  "), hint(keys, what, theme)});
+            };
+
             body = {
                 title("Ready"),
                 text(""),
-                hbox({text("  Config  ") | color(toFtx(theme.muted)),
-                      text(paths::contractUser(config_.path()))}),
-                hbox({text("  Opens   ") | color(toFtx(theme.muted)),
-                      text(config_.general().workspace)}),
-                hbox({text("  Theme   ") | color(toFtx(theme.muted)),
-                      text(config_.decoration().theme)}),
-                shellIntegrationResult_.empty()
-                    ? text("")
-                    : hbox({text("  Shell   ") | color(toFtx(theme.muted)),
-                            text(shellIntegrationResult_)}),
+                row("Config ", paths::contractUser(config_.path())),
+                row("Opens  ", config_.general().workspace),
+                row("Theme  ", config_.decoration().theme),
+                shellIntegrationResult_.empty() ? text("")
+                                                : row("Shell  ", shellIntegrationResult_),
                 text(""),
-                hint(config_.general().leader.describe() + " then Space", "everything Apollo can do",
-                     theme),
-                hint("F1", "the key reference", theme),
-                hint(config_.general().leader.describe() + " then ,", "these settings again", theme),
+                keyRow(config_.general().leader.describe() + " then Space",
+                       "everything Apollo can do"),
+                keyRow("F1", "the key reference"),
+                keyRow(config_.general().leader.describe() + " then ,", "these settings again"),
                 text(""),
             };
             footer = {hint("Enter", "start", theme)};

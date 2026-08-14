@@ -161,6 +161,8 @@ public:
     std::string title;
     std::string cwd;      // OSC 7
     bool bellPending = false;
+    // OSC 133 C and D: the shell telling us a command started and finished.
+    bool commandRunning = false;
     // Bumped whenever anything visible changes, so the UI can skip redraws.
     std::uint64_t revision() const { return revision_; }
 
