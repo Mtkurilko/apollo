@@ -499,13 +499,28 @@ void ConfigFile::set(const std::string& path, const std::string& value) {
         }
     }
 
-    // New key: place it just before the section's closing brace.
+    // New key: place it just before the section's closing brace, lined up with
+    // whatever the neighbours do. A settings screen that writes a ragged line
+    // into a hand-aligned file is a small betrayal.
     const int at = node->closeLine >= 0 ? node->closeLine
                                         : static_cast<int>(lines_.size());
     const std::string indent = node == &root_
                                    ? ""
                                    : indentOf(lines_[node->openLine]) + "    ";
-    lines_.insert(lines_.begin() + at, indent + key + " = " + value);
+
+    std::size_t column = 0;
+    for (const auto& sibling : node->entries) {
+        if (sibling.line < 0) continue;
+        const std::size_t eq = findAssign(lines_[sibling.line]);
+        if (eq != std::string::npos) column = std::max(column, eq);
+    }
+
+    std::string spelled = indent + key;
+    // One space is added below, so pad to the column before the '='.
+    if (column > 0 && column - 1 > spelled.size()) {
+        spelled.append(column - 1 - spelled.size(), ' ');
+    }
+    lines_.insert(lines_.begin() + at, spelled + " = " + value);
     reparse();
 }
 

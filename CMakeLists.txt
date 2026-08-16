@@ -41,6 +41,7 @@ add_library(apollo_core STATIC
     src/core/Paths.cpp
     src/core/ConfigFile.cpp
     src/core/Config.cpp
+    src/core/Layout.cpp
     src/core/Theme.cpp
     src/core/Keys.cpp
     src/core/Commands.cpp

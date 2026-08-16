@@ -51,6 +51,17 @@ std::vector<std::pair<int, int>> matchRanges(const std::string& haystack,
     return ranges;
 }
 
+// The host terminal's own cursor, placed on the cell the program thinks it is
+// on. Using the real one rather than painting a block means it blinks the way
+// the user's terminal blinks and takes the shape they asked for.
+Element withCursor(Element cell, const std::string& shape, bool blink) {
+    if (shape == "bar") return blink ? focusCursorBarBlinking(std::move(cell))
+                                     : focusCursorBar(std::move(cell));
+    if (shape == "underline") return blink ? focusCursorUnderlineBlinking(std::move(cell))
+                                           : focusCursorUnderline(std::move(cell));
+    return blink ? focusCursorBlockBlinking(std::move(cell)) : focusCursorBlock(std::move(cell));
+}
+
 } // namespace
 
 Element renderTerminal(const Session& session,
@@ -72,9 +83,12 @@ Element renderTerminal(const Session& session,
         session.selection.normalised(selFromLine, selFromCol, selToLine, selToCol);
     }
 
-    const bool showCursor = options.focused && screen.cursorVisible() &&
-                            session.scrollOffset() == 0 &&
-                            (options.cursorPhase || !settings.cursorBlink);
+    // The real cursor goes to the focused pane. An unfocused pane still shows
+    // where it is, as a dimmed block, the way every terminal multiplexer does.
+    const bool liveCursor = options.focused && screen.cursorVisible() &&
+                            session.scrollOffset() == 0;
+    const bool ghostCursor = !options.focused && screen.cursorVisible() &&
+                             session.scrollOffset() == 0;
     const int cursorLine = screen.totalLines() - screen.rows() + screen.cursorY();
 
     const Color defaultFg = toFtx(theme.fg);
@@ -136,18 +150,30 @@ Element renderTerminal(const Session& session,
                 }
             }
 
-            const bool isCursor = showCursor && absolute == cursorLine && x == screen.cursorX();
-            if (isCursor) std::swap(style.fg, style.bg);
+            const bool onCursor = absolute == cursorLine && x == screen.cursorX();
+            if (onCursor && ghostCursor) std::swap(style.fg, style.bg);
 
-            // The cursor is always its own run: it is one cell with different
-            // colours, and merging it into a neighbour would lose it.
+            // The cursor is always its own run: it is one cell that has to be
+            // addressable, and merging it into a neighbour would lose it.
+            const bool isCursor = onCursor && (liveCursor || ghostCursor);
             if (!started || !(style == current) || isCursor) {
                 flush();
                 current = style;
                 started = true;
             }
             appendUtf8(buffer, cell.cp == 0 ? U' ' : cell.cp);
-            if (isCursor) flush();
+            if (isCursor) {
+                const bool live = onCursor && liveCursor;
+                std::string glyph;
+                glyph.swap(buffer);
+                Element painted = decorate(text(glyph), current);
+                if (live) {
+                    painted = withCursor(std::move(painted), settings.cursor,
+                                         settings.cursorBlink);
+                }
+                runs.push_back(std::move(painted));
+                started = false;
+            }
         }
         flush();
 

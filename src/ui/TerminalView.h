@@ -16,7 +16,6 @@ namespace apollo::ui {
 
 struct TerminalViewOptions {
     bool focused = true;
-    bool cursorPhase = true; // false during the dark half of a blink
     int height = 24;
     std::string searchTerm;  // matches are highlighted while a search is open
     int searchLine = -1;     // the match currently being stepped through

@@ -58,7 +58,8 @@ struct TerminalSettings {
 struct BrowserSettings {
     bool show = true;
     int width = 34;
-    std::string position = "left"; // left | right
+    std::string position = "left";  // left | right
+    std::string layout = "split";   // split | stacked
     bool showHidden = false;
     std::string sort = "name"; // name | size | modified | type
     bool dirsFirst = true;

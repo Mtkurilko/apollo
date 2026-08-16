@@ -35,6 +35,7 @@ class Grid:
         self.x = self.y = 0
         self.wrap = False
         self.pending = ""
+        self.shape = "?"
 
     @staticmethod
     def incomplete(tail):
@@ -107,6 +108,9 @@ class Grid:
             i += 1
 
     def csi(self, params, final):
+        if final == "q":
+            self.shape = params
+            return
         if final in "HABCDGJK":
             self.wrap = False
         nums = [int(p) for p in params.replace("?", "").split(";") if p.isdigit()]
@@ -200,6 +204,33 @@ def main():
             os.system(key[4:-1])
             drain(1.2)
             continue
+        # Mouse, in SGR encoding, 1-based like the protocol itself:
+        #   <click:X,Y>  <dblclick:X,Y>  <drag:X1,Y1,X2,Y2>  <wheel:X,Y,up|down>
+        if key.startswith("<click:") or key.startswith("<dblclick:"):
+            x, y = (int(v) for v in key[key.index(":") + 1:-1].split(","))
+            times = 2 if key.startswith("<dbl") else 1
+            for _ in range(times):
+                os.write(fd, f"\x1b[<0;{x};{y}M".encode())
+                drain(0.05)
+                os.write(fd, f"\x1b[<0;{x};{y}m".encode())
+                drain(0.05)
+            drain(0.5)
+            continue
+        if key.startswith("<drag:"):
+            x1, y1, x2, y2 = (int(v) for v in key[6:-1].split(","))
+            os.write(fd, f"\x1b[<0;{x1};{y1}M".encode())
+            drain(0.05)
+            os.write(fd, f"\x1b[<32;{x2};{y2}M".encode())
+            drain(0.05)
+            os.write(fd, f"\x1b[<0;{x2};{y2}m".encode())
+            drain(0.5)
+            continue
+        if key.startswith("<wheel:"):
+            x, y, direction = key[7:-1].split(",")
+            code = 64 if direction == "up" else 65
+            os.write(fd, f"\x1b[<{code};{x};{y}M".encode())
+            drain(0.35)
+            continue
         # <size:COLSxROWS> resizes the window, which is the one thing a full
         # screen program has to get right and the easiest thing to get wrong.
         if key.startswith("<size:") and key.endswith(">"):
@@ -214,6 +245,9 @@ def main():
         drain(0.35)
 
     print(grid.text())
+    if os.environ.get("DRIVE_CURSOR"):
+        print(f"[cursor at row {grid.y + 1}, col {grid.x + 1}; shape {grid.shape}]",
+              file=sys.stderr)
 
     try:
         os.kill(pid, signal.SIGKILL)

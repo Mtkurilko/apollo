@@ -45,6 +45,9 @@ private:
         int terminalRows = 20, terminalCols = 80;
         int browserRows = 20;
         bool stacked = false;
+        // What the chrome looks like after the layout has had its say: a window
+        // with no room for a border does not get one.
+        DecorationSettings decoration;
     };
     Layout measure() const;
 
@@ -69,6 +72,8 @@ private:
     ftxui::Element render();
     ftxui::Element renderStatusBar(const Layout& layout);
     ftxui::Element renderTabs();
+    // Where each tab's label sits along the top row, so a click can find it.
+    std::vector<int> tabEdges() const;
     ftxui::Element renderHelp(int width, int height);
     ftxui::Element renderSearch();
 
@@ -94,9 +99,14 @@ private:
     ConfigView configView_;
     Onboard onboard_;
 
-    bool browserVisible_ = true;
-    bool stacked_ = false;
-    int browserWidth_ = 34;
+    // The pane arrangement lives in the config and nowhere else, so a key that
+    // changes it and the file that describes it can never disagree.
+    bool browserVisible() const;
+    bool stacked() const;
+    int browserWidth() const;
+    // Writes a setting and saves, reporting rather than swallowing a failure.
+    bool put(const std::string& path, const std::string& value);
+
     bool leaderArmed_ = false;
     bool helpOpen_ = false;
 
@@ -108,8 +118,8 @@ private:
     std::string status_;
     bool statusIsError_ = false;
     std::chrono::steady_clock::time_point statusUntil_{};
-    bool cursorPhase_ = true;
-    std::chrono::steady_clock::time_point lastBlink_{};
+    std::chrono::steady_clock::time_point lastClick_{};
+    int lastClickRow_ = -1;
 
     std::atomic<bool> ticking_{false};
     std::thread ticker_;

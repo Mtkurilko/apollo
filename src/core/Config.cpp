@@ -99,7 +99,10 @@ const std::vector<Config::Setting>& Config::schema() {
 
         s.push_back(flag("browser.show", true, "Show the file browser"));
         s.push_back(number("browser.width", 34, 16, 120, "Browser width, in columns"));
-        s.push_back(choice("browser.position", "left", {"left", "right"}, "Which side the browser sits on"));
+        s.push_back(choice("browser.position", "left", {"left", "right"},
+                           "Which side the browser sits on"));
+        s.push_back(choice("browser.layout", "split", {"split", "stacked"},
+                           "Side by side, or the browser above the terminal"));
         s.push_back(flag("browser.show_hidden", false, "List dotfiles"));
         s.push_back(choice("browser.sort", "name", {"name", "size", "modified", "type"}, "Sort order"));
         s.push_back(flag("browser.dirs_first", true, "Group directories above files"));
@@ -444,6 +447,7 @@ void Config::derive() {
     browser_.show = yes("browser.show", true);
     browser_.width = std::clamp(num("browser.width", 34), 16, 120);
     browser_.position = text("browser.position", "left");
+    browser_.layout = text("browser.layout", "split");
     browser_.showHidden = yes("browser.show_hidden", false);
     browser_.sort = text("browser.sort", "name");
     browser_.dirsFirst = yes("browser.dirs_first", true);

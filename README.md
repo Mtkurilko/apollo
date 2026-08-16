@@ -82,8 +82,12 @@ program running in the terminal.
 | `F1` | The full key reference |
 
 Drag to select, and the selection is copied. The wheel scrolls. Double click
-opens. Every one of these is a line in the config, and `unbind` removes any of
-them.
+opens. Click a tab to switch to it. Every one of these is a line in the config,
+and `unbind` removes any of them.
+
+The keys that rearrange the panes — show the browser, stack it, resize it, show
+dotfiles — write to the config as they go, so what you set up with your hands
+is what you get back next time.
 
 ## Configuring it
 
@@ -111,7 +115,8 @@ colors {
 }
 
 browser {
-    position    = left
+    position    = left         # left or right
+    layout      = split        # split, or stacked above the terminal
     show_hidden = false
     git_status  = true
 }

@@ -7,6 +7,7 @@
 #include <ftxui/component/event.hpp>
 #include <ftxui/screen/terminal.hpp>
 
+#include "core/Layout.h"
 #include "core/Paths.h"
 #include "core/Process.h"
 #include "net/Ssh.h"
@@ -103,10 +104,23 @@ App::~App() {
 
 // --- configuration ---------------------------------------------------------
 
+bool App::browserVisible() const { return config_.browser().show; }
+bool App::stacked() const { return config_.browser().layout == "stacked"; }
+int App::browserWidth() const { return config_.browser().width; }
+
+bool App::put(const std::string& path, const std::string& value) {
+    std::string problem;
+    if (!config_.set(path, value, &problem) || !config_.save(&problem)) {
+        say(problem.empty() ? "could not write " + paths::contractUser(config_.path()) : problem,
+            true);
+        return false;
+    }
+    applyConfig();
+    return true;
+}
+
 void App::applyConfig() {
     theme_ = &config_.theme();
-    browserVisible_ = config_.browser().show;
-    browserWidth_ = config_.browser().width;
 
     for (auto& session : tabs_) {
         session->screen().setScrollbackLimit(config_.terminal().scrollback);
@@ -208,49 +222,36 @@ void App::closeTab(int index) {
 
 App::Layout App::measure() const {
     const Dimensions size = Terminal::Size();
-
-    Layout layout;
-    layout.width = std::max(20, size.dimx);
-    layout.height = std::max(6, size.dimy);
-    layout.stacked = stacked_;
-
     const auto& decoration = config_.decoration();
-    const int frameV = (decoration.border == "none" ? 0 : 2) + (decoration.titleBar ? 2 : 0);
-    const int frameH = decoration.border == "none" ? 0 : 2;
 
-    int available = layout.height;
-    if (decoration.statusBar) available -= 1;
-    if (tabs_.size() > 1) available -= 1;
-    available = std::max(3, available);
+    layout::Request request;
+    request.width = size.dimx;
+    request.height = size.dimy;
+    request.border = decoration.border;
+    request.titleBar = decoration.titleBar;
+    request.statusBar = decoration.statusBar;
+    request.tabBar = tabs_.size() > 1;
+    request.gaps = decoration.gaps;
+    request.browserVisible = browserVisible();
+    request.stacked = stacked();
+    request.browserWidth = browserWidth();
 
-    if (!browserVisible_) {
-        layout.browserWidth = 0;
-        layout.terminalCols = std::max(20, layout.width - frameH);
-        layout.terminalRows = std::max(3, available - frameV);
-        layout.browserRows = 0;
-        return layout;
-    }
+    const layout::Panes panes = layout::compute(request);
 
-    if (stacked_) {
-        // A third of the height, but never so little that the browser is a
-        // single row of chrome, and never so much that the terminal is.
-        int browserHeight = std::clamp(available / 3, frameV + 6, frameV + 20);
-        browserHeight = std::min(browserHeight, available - decoration.gaps - frameV - 6);
-        browserHeight = std::max(browserHeight, frameV + 1);
+    Layout out;
+    out.width = std::max(1, size.dimx);
+    out.height = std::max(1, size.dimy);
+    out.stacked = stacked();
+    out.browserWidth = panes.browserWidth;
+    out.browserRows = panes.browserRows;
+    out.terminalCols = panes.terminalCols;
+    out.terminalRows = panes.terminalRows;
 
-        layout.browserWidth = layout.width;
-        layout.browserRows = std::max(1, browserHeight - frameV);
-        layout.terminalCols = std::max(20, layout.width - frameH);
-        layout.terminalRows = std::max(3, available - browserHeight - decoration.gaps - frameV);
-        return layout;
-    }
-
-    layout.browserWidth = std::clamp(browserWidth_, 16, std::max(16, layout.width / 2));
-    layout.terminalCols =
-        std::max(20, layout.width - layout.browserWidth - decoration.gaps - frameH);
-    layout.terminalRows = std::max(3, available - frameV);
-    layout.browserRows = std::max(1, available - frameV);
-    return layout;
+    out.decoration = decoration;
+    if (!panes.border) out.decoration.border = "none";
+    out.decoration.titleBar = panes.titleBar;
+    out.decoration.statusBar = panes.statusBar;
+    return out;
 }
 
 // --- actions ---------------------------------------------------------------
@@ -294,33 +295,38 @@ void App::act(const std::string& action, const std::vector<std::string>& args) {
     if (action == "command_palette") { openPalette(); return; }
     if (action == "focus_terminal") { focus_ = Focus::Terminal; return; }
     if (action == "focus_browser") {
-        if (!browserVisible_) browserVisible_ = true;
+        if (!browserVisible()) put("browser.show", "true");
         focus_ = Focus::Browser;
         return;
     }
     if (action == "focus_next") {
-        focus_ = focus_ == Focus::Terminal && browserVisible_ ? Focus::Browser : Focus::Terminal;
+        focus_ = focus_ == Focus::Terminal && browserVisible() ? Focus::Browser : Focus::Terminal;
         return;
     }
     if (action == "toggle_browser") {
-        browserVisible_ = !browserVisible_;
-        if (!browserVisible_) focus_ = Focus::Terminal;
+        put("browser.show", browserVisible() ? "false" : "true");
+        if (!browserVisible()) focus_ = Focus::Terminal;
         return;
     }
-    if (action == "toggle_layout") { stacked_ = !stacked_; return; }
+    if (action == "toggle_layout") {
+        put("browser.layout", stacked() ? "split" : "stacked");
+        return;
+    }
     if (action == "toggle_hidden") {
-        std::string problem;
-        config_.set("browser.show_hidden", config_.browser().showHidden ? "false" : "true", &problem);
-        config_.save(&problem);
-        browser_.refresh(config_.browser());
-        say(config_.browser().showHidden ? "showing hidden files" : "hiding hidden files");
+        if (put("browser.show_hidden", config_.browser().showHidden ? "false" : "true")) {
+            browser_.refresh(config_.browser());
+            say(config_.browser().showHidden ? "showing hidden files" : "hiding hidden files");
+        }
         return;
     }
     if (action == "grow_pane") {
-        browserWidth_ = std::min(browserWidth_ + 4, measure().width / 2);
+        put("browser.width", std::to_string(std::min(browserWidth() + 4, measure().width / 2)));
         return;
     }
-    if (action == "shrink_pane") { browserWidth_ = std::max(16, browserWidth_ - 4); return; }
+    if (action == "shrink_pane") {
+        put("browser.width", std::to_string(std::max(16, browserWidth() - 4)));
+        return;
+    }
 
     if (action == "new_tab") { newTab(nullptr); return; }
     if (action == "close_tab") { closeTab(tab_); return; }
@@ -481,15 +487,11 @@ void App::tick() {
     // Blink, notice a config the user saved in their editor, and re-read the
     // directory if something outside Apollo changed it.
     const auto now = std::chrono::steady_clock::now();
-    if (now - lastBlink_ > std::chrono::milliseconds(500)) {
-        cursorPhase_ = !cursorPhase_;
-        lastBlink_ = now;
-    }
     if (config_.reloadIfChanged()) {
         applyConfig();
         say("reloaded " + paths::contractUser(config_.path()));
     }
-    if (browserVisible_) browser_.refreshIfStale(config_.browser());
+    if (browserVisible()) browser_.refreshIfStale(config_.browser());
 
     for (auto& session : tabs_) {
         if (!session->screen().bellPending) continue;
@@ -534,10 +536,11 @@ bool App::onMouse(const Event& event) {
     const Layout layout = measure();
     const Mouse& mouse = const_cast<Event&>(event).mouse();
 
-    const auto& decoration = config_.decoration();
+    const DecorationSettings& decoration = layout.decoration;
     const int frame = decoration.border == "none" ? 0 : 1;
     const int titleRows = decoration.titleBar ? 2 : 0;
-    const int topOffset = (tabs_.size() > 1 ? 1 : 0) + frame + titleRows;
+    const int topOffset =
+        (tabs_.size() > 1 && decoration.statusBar ? 1 : 0) + frame + titleRows;
 
     const bool browserOnLeft = config_.browser().position != "right";
     const int browserLeft = browserOnLeft ? 0 : layout.width - layout.browserWidth;
@@ -546,7 +549,8 @@ bool App::onMouse(const Event& event) {
     // Scroll wheel: the browser moves its selection, the terminal its history.
     if (mouse.button == Mouse::WheelUp || mouse.button == Mouse::WheelDown) {
         const int direction = mouse.button == Mouse::WheelUp ? 1 : -1;
-        if (browserVisible_ && !stacked_ && mouse.x >= browserLeft && mouse.x < browserRight) {
+        if (layout.browserWidth > 0 && !layout.stacked && mouse.x >= browserLeft &&
+            mouse.x < browserRight) {
             browser_.moveSelection(-direction);
             return true;
         }
@@ -563,12 +567,35 @@ bool App::onMouse(const Event& event) {
 
     if (mouse.button != Mouse::Left) return true;
 
-    const bool inBrowser = browserVisible_ && !stacked_ && mouse.x >= browserLeft &&
+    // The tab strip, when there is one.
+    if (tabs_.size() > 1 && mouse.y == 0) {
+        if (mouse.motion != Mouse::Pressed) return true;
+        const std::vector<int> edges = tabEdges();
+        for (std::size_t i = 0; i + 1 < edges.size(); ++i) {
+            if (mouse.x >= edges[i] && mouse.x < edges[i + 1]) {
+                tab_ = static_cast<int>(i);
+                focus_ = Focus::Terminal;
+                break;
+            }
+        }
+        return true;
+    }
+
+    const bool inBrowser = layout.browserWidth > 0 && !layout.stacked && mouse.x >= browserLeft &&
                            mouse.x < browserRight;
     if (inBrowser) {
         focus_ = Focus::Browser;
         if (mouse.motion == Mouse::Pressed) {
-            browser_.onClick(mouse.y - topOffset, false);
+            // Terminals do not report double clicks, so time them here: a
+            // second press on the same row inside 400ms opens the entry.
+            const int row = mouse.y - topOffset;
+            const auto now = std::chrono::steady_clock::now();
+            const bool doubleClick = row == lastClickRow_ &&
+                                     now - lastClick_ < std::chrono::milliseconds(400);
+            browser_.onClick(row, doubleClick);
+            // Reset after acting, or a third click would count as another pair.
+            lastClick_ = doubleClick ? std::chrono::steady_clock::time_point{} : now;
+            lastClickRow_ = doubleClick ? -1 : row;
         }
         return true;
     }
@@ -697,17 +724,32 @@ bool App::onEvent(const Event& event) {
 
 // --- rendering -------------------------------------------------------------
 
+namespace {
+
+std::string tabLabel(const term::Session& session, std::size_t index) {
+    std::string label = " " + std::to_string(index + 1) + " " + session.title();
+    if (!session.windowTitle().empty() && session.windowTitle() != session.title()) {
+        label += ": " + elide(session.windowTitle(), 24);
+    }
+    return label + " ";
+}
+
+} // namespace
+
+std::vector<int> App::tabEdges() const {
+    std::vector<int> edges{0};
+    for (std::size_t i = 0; i < tabs_.size(); ++i) {
+        edges.push_back(edges.back() + displayWidth(tabLabel(*tabs_[i], i)));
+    }
+    return edges;
+}
+
 Element App::renderTabs() {
     Elements tabs;
     for (std::size_t i = 0; i < tabs_.size(); ++i) {
         const auto& session = tabs_[i];
         const bool isActive = static_cast<int>(i) == tab_;
-
-        std::string label = " " + std::to_string(i + 1) + " " + session->title();
-        if (!session->windowTitle().empty() && session->windowTitle() != session->title()) {
-            label += ": " + elide(session->windowTitle(), 24);
-        }
-        label += " ";
+        const std::string label = tabLabel(*session, i);
 
         Element tab = text(label);
         if (isActive) {
@@ -738,8 +780,13 @@ Element App::renderStatusBar(const Layout& layout) {
     // dropped as the window narrows, rather than every piece being squeezed
     // until none of them is readable.
     const bool showLeaderHint = width >= 76;
-    const bool showBrowserStats = width >= 92;
+    const bool showBrowserStats = width >= 92 && status_.empty();
     int reserved = 2;
+    // A message on the right takes room from the path, not from the gap
+    // between them.
+    if (!status_.empty()) {
+        reserved += std::min(static_cast<int>(status_.size()), width / 2) + 3;
+    }
     if (showLeaderHint) reserved += static_cast<int>(
         config_.general().leader.describe().size()) + 8;
     if (showBrowserStats) reserved += static_cast<int>(browser_.statusLine().size()) + 2;
@@ -911,7 +958,7 @@ Element App::render() {
     }
 
     const Layout layout = measure();
-    const auto& decoration = config_.decoration();
+    const DecorationSettings& decoration = layout.decoration;
 
     term::Session* session = active();
     if (session) session->resize(layout.terminalRows, layout.terminalCols);
@@ -920,7 +967,6 @@ Element App::render() {
     TerminalViewOptions viewOptions;
     viewOptions.focused = focus_ == Focus::Terminal && !palette_.isOpen() &&
                           !configView_.isOpen() && !onboard_.isOpen();
-    viewOptions.cursorPhase = cursorPhase_;
     viewOptions.height = layout.terminalRows;
     if (searching_) viewOptions.searchTerm = searchQuery_.text;
 
@@ -940,7 +986,7 @@ Element App::render() {
 
     // --- browser pane ---
     Element body;
-    if (!browserVisible_) {
+    if (layout.browserWidth == 0) {
         body = std::move(terminalPane);
     } else {
         Element browserPane =
@@ -949,7 +995,7 @@ Element App::render() {
                                   layout.browserRows, layout.browserWidth - 2),
                   focus_ == Focus::Browser, *theme_, decoration);
 
-        if (stacked_) {
+        if (layout.stacked) {
             Elements rows{std::move(browserPane)};
             if (decoration.gaps > 0) rows.push_back(text(""));
             rows.push_back(std::move(terminalPane) | flex);
@@ -975,7 +1021,7 @@ Element App::render() {
     }
 
     Elements screen;
-    if (tabs_.size() > 1) screen.push_back(renderTabs());
+    if (tabs_.size() > 1 && decoration.statusBar) screen.push_back(renderTabs());
     screen.push_back(std::move(body) | flex);
     if (searching_) screen.push_back(renderSearch());
     else if (decoration.statusBar) screen.push_back(renderStatusBar(layout));

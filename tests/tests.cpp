@@ -9,12 +9,14 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 
 #include "core/Commands.h"
 #include "core/Config.h"
 #include "core/ConfigFile.h"
 #include "core/Keys.h"
+#include "core/Layout.h"
 #include "core/Paths.h"
 #include "core/Theme.h"
 #include "term/Screen.h"
@@ -108,8 +110,26 @@ bind = LEADER, B, toggle_browser
 
     file.set("general.editor", "nvim");
     expect(file.get("general.editor", "?"), std::string("nvim"), "inserts a new key in a section");
-    check(file.text().find("    editor = nvim") != std::string::npos,
-          "a new key is indented like its neighbours");
+    // Alignment is checked structurally: the new line's '=' has to land in the
+    // same column as the ones already in the section.
+    {
+        const auto columnOfAssign = [&](const std::string& key) {
+            std::istringstream reader(file.text());
+            std::string line;
+            while (std::getline(reader, line)) {
+                const std::string trimmed = ConfigFile::trim(line);
+                if (trimmed.rfind(key, 0) != 0) continue;
+                if (trimmed.size() > key.size() && trimmed[key.size()] != ' ' &&
+                    trimmed[key.size()] != '=') {
+                    continue;
+                }
+                return static_cast<int>(line.find('='));
+            }
+            return -1;
+        };
+        expect(columnOfAssign("editor"), columnOfAssign("workspace"),
+               "a new key is aligned with its neighbours");
+    }
 
     file.set("terminal.scrollback", "500");
     expect(file.get("terminal.scrollback", "?"), std::string("500"), "creates a missing section");
@@ -614,6 +634,96 @@ void testThemeFiles() {
     std::filesystem::remove_all(themes);
 }
 
+// --- pane geometry ---------------------------------------------------------
+
+void testLayout() {
+    section("pane geometry");
+
+    // The invariant that matters: what the terminal is told about its own size
+    // must be exactly what will be drawn. A grid one column wider than its pane
+    // loses the last column of every row, and it reads as a character going
+    // missing at each line wrap.
+    // Measured against what compute() says it kept, not against what was asked
+    // for: shedding a title bar is a valid answer to a window with no room.
+    const auto fits = [](const layout::Request& request, const layout::Panes& panes) {
+        const int frameH = panes.border ? 2 : 0;
+        const int frameV = (panes.border ? 2 : 0) + (panes.titleBar ? 2 : 0);
+
+        int usedWidth = panes.terminalCols + frameH;
+        if (panes.browserShown() && !request.stacked) {
+            usedWidth += panes.browserWidth + std::max(0, request.gaps);
+        }
+        if (usedWidth > std::max(1, request.width)) return false;
+
+        int usedHeight = panes.terminalRows + frameV;
+        if (panes.statusBar) usedHeight += 1;
+        if (panes.tabBar) usedHeight += 1;
+        if (panes.browserShown() && request.stacked) {
+            usedHeight += panes.browserRows + frameV + std::max(0, request.gaps);
+        }
+        return usedHeight <= std::max(1, request.height);
+    };
+
+    bool everythingFits = true;
+    bool everythingPositive = true;
+    for (int width = 1; width <= 200; ++width) {
+        for (int height = 1; height <= 60; ++height) {
+            for (const bool stacked : {false, true}) {
+                for (const char* border : {"rounded", "none"}) {
+                    for (const int gaps : {0, 1, 3}) {
+                        layout::Request request;
+                        request.width = width;
+                        request.height = height;
+                        request.stacked = stacked;
+                        request.border = border;
+                        request.titleBar = std::string(border) != "none";
+                        request.gaps = gaps;
+                        request.tabBar = (width % 3) == 0;
+
+                        const layout::Panes panes = layout::compute(request);
+                        if (!fits(request, panes)) {
+                            everythingFits = false;
+                            std::cout << "         overflow at " << width << "x" << height
+                                      << (stacked ? " stacked" : " side by side") << " border="
+                                      << border << " gaps=" << gaps << "\n";
+                        }
+                        if (panes.terminalCols < 1 || panes.terminalRows < 1) {
+                            everythingPositive = false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    check(everythingFits, "no size makes a pane larger than the window it is drawn in");
+    check(everythingPositive, "and no size produces a pane with no room at all");
+
+    layout::Request wide;
+    wide.width = 120;
+    wide.height = 40;
+    const layout::Panes both = layout::compute(wide);
+    check(both.browserShown(), "a big window shows both panes");
+    expect(both.browserWidth, 34, "the browser gets the width it asked for");
+
+    layout::Request narrow;
+    narrow.width = 44;
+    narrow.height = 20;
+    check(!layout::compute(narrow).browserShown(),
+          "a narrow window drops the browser rather than squeezing both");
+
+    layout::Request short_;
+    short_.width = 100;
+    short_.height = 12;
+    short_.stacked = true;
+    check(!layout::compute(short_).browserShown(),
+          "and a short one does the same when stacked");
+
+    layout::Request hidden;
+    hidden.browserVisible = false;
+    check(!layout::compute(hidden).browserShown(), "a hidden browser stays hidden");
+    expect(layout::compute(hidden).terminalCols, 78, "and the terminal takes the whole width");
+}
+
 void testPaths() {
     section("paths");
 
@@ -637,6 +747,7 @@ int main() {
     std::cout << "apollo tests\n";
 
     testPaths();
+    testLayout();
     testConfigFile();
     testTheme();
     testKeys();
