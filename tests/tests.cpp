@@ -127,8 +127,13 @@ bind = LEADER, B, toggle_browser
             }
             return -1;
         };
-        expect(columnOfAssign("editor"), columnOfAssign("workspace"),
-               "a new key is aligned with its neighbours");
+        // The section is not uniformly aligned to begin with, so a new key
+        // lines up with the widest entry rather than with whichever one
+        // happens to come first.
+        expect(columnOfAssign("editor"), columnOfAssign("follow_cwd"),
+               "a new key is aligned with the widest of its neighbours");
+        check(columnOfAssign("editor") >= columnOfAssign("workspace"),
+              "and never lands before an existing '='");
     }
 
     file.set("terminal.scrollback", "500");
