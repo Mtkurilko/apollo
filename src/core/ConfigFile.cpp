@@ -89,10 +89,14 @@ const ConfigNode* ConfigNode::child(const std::string& childName,
 }
 
 const ConfigEntry* ConfigNode::entry(const std::string& key) const {
+    // The last one wins, which is what a reader expects when a key appears
+    // twice, and what makes `source` predictable: sourced entries are placed
+    // ahead of the file's own, so your own file always has the last word.
+    const ConfigEntry* found = nullptr;
     for (const auto& e : entries) {
-        if (e.key == key) return &e;
+        if (e.key == key) found = &e;
     }
-    return nullptr;
+    return found;
 }
 
 std::vector<const ConfigEntry*> ConfigNode::entriesNamed(const std::string& key) const {
@@ -265,15 +269,34 @@ void ConfigFile::reparse() {
             if (!nested.load(included)) {
                 for (const auto& d : nested.diagnostics()) diags_.push_back(d);
             }
-            // Merged entries carry line -1: they belong to another file, and
-            // `apollo config set` must never try to rewrite them there.
+            // Sourced entries carry line -1: they live in another file, and
+            // `apollo config set` must never try to rewrite them there. They
+            // are placed *ahead* of whatever this file says, so a sourced file
+            // supplies defaults and the file doing the sourcing overrides them,
+            // wherever in the file the `source` line happens to sit.
             const auto adopt = [](auto&& self, ConfigNode& into, const ConfigNode& from) -> void {
+                std::vector<ConfigEntry> incoming;
                 for (const auto& e : from.entries) {
                     ConfigEntry copy = e;
                     copy.line = -1;
-                    into.entries.push_back(std::move(copy));
+                    incoming.push_back(std::move(copy));
                 }
+                into.entries.insert(into.entries.begin(), incoming.begin(), incoming.end());
+
                 for (const auto& c : from.children) {
+                    // Merge into a section of the same name rather than adding
+                    // a second one, or lookups would only ever see the first.
+                    ConfigNode* existing = nullptr;
+                    for (auto& candidate : into.children) {
+                        if (candidate.name == c.name && candidate.label == c.label) {
+                            existing = &candidate;
+                            break;
+                        }
+                    }
+                    if (existing) {
+                        self(self, *existing, c);
+                        continue;
+                    }
                     ConfigNode copy;
                     copy.name = c.name;
                     copy.label = c.label;

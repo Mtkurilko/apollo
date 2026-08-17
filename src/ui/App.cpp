@@ -780,12 +780,19 @@ Element App::renderStatusBar(const Layout& layout) {
     // dropped as the window narrows, rather than every piece being squeezed
     // until none of them is readable.
     const bool showLeaderHint = width >= 76;
-    const bool showBrowserStats = width >= 92 && status_.empty();
+    const bool showBrowserStats = width >= 92 && status_.empty() && config_.issues().empty();
     int reserved = 2;
-    // A message on the right takes room from the path, not from the gap
+    // Whatever sits on the right takes room from the path, not from the gap
     // between them.
+    const std::size_t problems = config_.issues().size();
+    const std::string problemNote =
+        problems == 0 ? ""
+                      : std::to_string(problems) +
+                            (problems == 1 ? " config problem" : " config problems");
     if (!status_.empty()) {
         reserved += std::min(static_cast<int>(status_.size()), width / 2) + 3;
+    } else if (!problemNote.empty()) {
+        reserved += static_cast<int>(problemNote.size()) + 3;
     }
     if (showLeaderHint) reserved += static_cast<int>(
         config_.general().leader.describe().size()) + 8;
@@ -839,9 +846,8 @@ Element App::renderStatusBar(const Layout& layout) {
     if (!status_.empty()) {
         left.push_back(text(elide(status_, std::max(10, width / 2)) + "  ") |
                        color(toFtx(statusIsError_ ? theme_->error : theme_->success)));
-    } else if (!config_.issues().empty()) {
-        left.push_back(text(std::to_string(config_.issues().size()) + " config problems  ") |
-                       color(toFtx(theme_->warning)));
+    } else if (!problemNote.empty()) {
+        left.push_back(text(problemNote + "  ") | color(toFtx(theme_->warning)));
     } else if (showBrowserStats) {
         left.push_back(text(browser_.statusLine() + "  ") | color(toFtx(theme_->muted)));
     }

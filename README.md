@@ -128,6 +128,10 @@ unbind = LEADER, Q
 source = ~/.apollo/themes/shared.conf
 ```
 
+A sourced file supplies defaults; anything your own file sets overrides it,
+wherever in the file the `source` line happens to sit. `apollo config set`
+always writes your file, so it always takes effect.
+
 ### Themes
 
 Seven are built in: `apollo`, `midnight`, `nord`, `gruvbox`, `catppuccin`,

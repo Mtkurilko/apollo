@@ -151,6 +151,36 @@ bind = LEADER, B, toggle_browser
     check(file.removeSection("connection.pi"), "removes a whole section");
     expect(file.labelled("connection").size(), std::size_t(2), "the other sections survive");
 
+    // `source` supplies defaults; the file doing the sourcing overrides them,
+    // wherever in the file the source line sits.
+    {
+        const auto dir = std::filesystem::temp_directory_path() / "apollo-test-source";
+        std::filesystem::create_directories(dir);
+        {
+            std::ofstream out(dir / "base.conf");
+            out << "general {\n    workspace = /from/the/sourced/file\n"
+                   "    shell = /bin/from-source\n}\n";
+        }
+
+        ConfigFile including;
+        including.parse("general {\n    workspace = /mine\n}\n\nsource = " +
+                        (dir / "base.conf").string() + "\n");
+        check(including.ok(), "a sourced file loads");
+        expect(including.get("general.workspace", "?"), std::string("/mine"),
+               "the including file wins");
+        expect(including.get("general.shell", "?"), std::string("/bin/from-source"),
+               "and the sourced file fills in what it does not set");
+
+        // Writing must still land in the file the user is editing.
+        including.set("general.shell", "/bin/mine");
+        expect(including.get("general.shell", "?"), std::string("/bin/mine"),
+               "setting a sourced key writes it locally and takes effect");
+        check(including.text().find("/bin/from-source") == std::string::npos,
+              "and the sourced file was not touched");
+
+        std::filesystem::remove_all(dir);
+    }
+
     ConfigFile broken;
     broken.parse("general {\n  workspace = ~\n");
     check(!broken.ok(), "an unclosed section is reported");
