@@ -482,8 +482,10 @@ Element ConfigView::renderSettings(Page page, const Theme& theme, int width, int
         }
         explanation = vbox({
             text(elide(detail, std::max(10, width - 6))) | color(toFtx(theme.fg)),
-            text("  " + setting.path + "   default: " +
-                 (setting.defaultValue.empty() ? "unset" : setting.defaultValue)) |
+            text(elide("  " + setting.path + "   default: " +
+                           (setting.defaultValue.empty() ? "unset" : setting.defaultValue) +
+                           "   d resets it",
+                       std::max(10, width - 6))) |
                 color(toFtx(theme.muted)),
         });
     }

@@ -62,7 +62,8 @@ struct Probe {
 Probe probe(const Connection& conn, int timeoutSeconds = 8);
 
 // Escapes one argument for a remote /bin/sh, which sees a single string
-// however carefully we build argv on this side.
+// however carefully argv is built on this side. The rules are a local shell's
+// rules, which is why it is the same function.
 std::string quoteRemote(const std::string& text);
 
 } // namespace ssh

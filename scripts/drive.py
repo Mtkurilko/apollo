@@ -11,6 +11,16 @@ final screen by replaying the escape sequences into a small grid model.
 Keys are literal text, or names like <enter> <esc> <tab> <up> <c-a> <leader>.
 """
 import codecs, os, pty, re, select, signal, sys, time, fcntl, termios, struct
+import unicodedata
+
+
+def char_width(ch):
+    """Display columns for one character, the way a terminal counts them."""
+    if unicodedata.combining(ch):
+        return 0
+    if unicodedata.east_asian_width(ch) in ("W", "F"):
+        return 2
+    return 1
 
 KEYS = {
     "<enter>": "\r", "<esc>": "\x1b", "<tab>": "\t", "<space>": " ",
@@ -54,16 +64,27 @@ class Grid:
         # Pending wrap, as a real terminal does it: filling the last column
         # does not move to the next line, the *next* character does. Without
         # this every full-width row is followed by a phantom blank one.
+        width = char_width(ch)
+        if width == 0:
+            return
         if self.wrap:
             self.x = 0
             self.y = min(self.y + 1, self.rows - 1)
             self.wrap = False
+        if self.x + width > self.cols:
+            self.x = 0
+            self.y = min(self.y + 1, self.rows - 1)
         if self.y < self.rows and self.x < self.cols:
             self.cells[self.y][self.x] = ch
-        if self.x + 1 >= self.cols:
+            # A wide glyph owns the column to its right; marking it empty keeps
+            # the row's printed length equal to its column count.
+            if width == 2 and self.x + 1 < self.cols:
+                self.cells[self.y][self.x + 1] = ""
+        if self.x + width >= self.cols:
+            self.x = self.cols - 1
             self.wrap = True
         else:
-            self.x += 1
+            self.x += width
 
     def feed(self, data):
         # A read can end in the middle of an escape sequence. Keep the tail and

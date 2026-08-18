@@ -319,6 +319,16 @@ bool openWithDesktop(const std::string& path) {
     return false;
 }
 
+std::string shellQuote(const std::string& text) {
+    std::string out = "'";
+    for (const char c : text) {
+        if (c == '\'') out += "'\\''";
+        else out.push_back(c);
+    }
+    out.push_back('\'');
+    return out;
+}
+
 std::string userShell() {
     if (const char* shell = std::getenv("SHELL"); shell && *shell) return shell;
     if (const passwd* pw = getpwuid(getuid()); pw && pw->pw_shell && *pw->pw_shell) {

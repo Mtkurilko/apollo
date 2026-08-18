@@ -60,15 +60,7 @@ std::string controlPath(const Connection& conn) {
     return "/tmp/apollo." + std::to_string(::getuid()) + "." + name;
 }
 
-std::string quoteRemote(const std::string& text) {
-    std::string out = "'";
-    for (const char c : text) {
-        if (c == '\'') out += "'\\''";
-        else out.push_back(c);
-    }
-    out.push_back('\'');
-    return out;
-}
+std::string quoteRemote(const std::string& text) { return process::shellQuote(text); }
 
 Invocation interactive(const Connection& conn) {
     Invocation call = begin(conn);

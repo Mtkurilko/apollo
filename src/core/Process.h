@@ -60,4 +60,9 @@ std::optional<std::string> clipboardRead();
 // Hands a file to the desktop to open however it sees fit.
 bool openWithDesktop(const std::string& path);
 
+// Wraps one argument so /bin/sh sees it as a single word, whatever is in it.
+// Needed whenever text is typed into a shell rather than passed as argv: a
+// directory called `my stuff` should not arrive as two arguments.
+std::string shellQuote(const std::string& text);
+
 } // namespace apollo::process

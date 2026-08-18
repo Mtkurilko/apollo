@@ -93,6 +93,12 @@ void Onboard::advance() {
             break;
 
         case Step::Connection: {
+            if (wantsConnection_ && connectionName_.text.empty() &&
+                !connectionAddress_.text.empty()) {
+                error_ = "Give the destination a short name, or press n to skip";
+                connectionField_ = 1;
+                return;
+            }
             if (wantsConnection_ && !connectionName_.text.empty()) {
                 Connection conn;
                 conn.name = connectionName_.text;
@@ -244,7 +250,8 @@ bool Onboard::onKey(const KeyChord& chord, const std::string& raw) {
             LineEdit* field = connectionField_ == 1   ? &connectionName_
                               : connectionField_ == 2 ? &connectionAddress_
                                                       : &connectionKey_;
-            field->onKey(chord, raw);
+            // Typing into a field is as clear an answer as pressing y.
+            if (field->onKey(chord, raw)) wantsConnection_ = true;
             return true;
         }
 
@@ -284,6 +291,13 @@ Element Onboard::render(const Theme& theme, const DecorationSettings& decoration
             text("  " + label + " ") | color(toFtx(focused ? theme.fg : theme.muted)),
             edit.render(theme, placeholder, focused),
         });
+    };
+    // One of a pair of choices, the picked one filled in.
+    const auto choiceChip = [&](const std::string& label, bool picked) {
+        Element chip = text(label);
+        if (picked) chip = std::move(chip) | bgcolor(toFtx(theme.accent)) | color(toFtx(theme.bg));
+        else chip = std::move(chip) | color(toFtx(theme.muted));
+        return chip;
     };
 
     Elements body;
@@ -356,13 +370,9 @@ Element Onboard::render(const Theme& theme, const DecorationSettings& decoration
                 text(""),
                 hbox({
                     text("  "),
-                    text(wantsConnection_ ? " yes " : " yes ") |
-                        (wantsConnection_ ? bgcolor(toFtx(theme.accent)) : color(toFtx(theme.muted))) |
-                        (wantsConnection_ ? color(toFtx(theme.bg)) : color(toFtx(theme.muted))),
+                    choiceChip(" yes ", wantsConnection_),
                     text("  "),
-                    text(!wantsConnection_ ? " no " : " no ") |
-                        (!wantsConnection_ ? bgcolor(toFtx(theme.accent)) : color(toFtx(theme.muted))) |
-                        (!wantsConnection_ ? color(toFtx(theme.bg)) : color(toFtx(theme.muted))),
+                    choiceChip(" no ", !wantsConnection_),
                     text("   "),
                     text(connectionField_ == 0 ? "◂ y / n" : "") | color(toFtx(theme.muted)),
                 }),
@@ -393,15 +403,9 @@ Element Onboard::render(const Theme& theme, const DecorationSettings& decoration
                 text(""),
                 hbox({
                     text("  "),
-                    text(" add it ") |
-                        (shellIntegrationChoice_
-                             ? bgcolor(toFtx(theme.accent)) | color(toFtx(theme.bg))
-                             : color(toFtx(theme.muted))),
+                    choiceChip(" add it ", shellIntegrationChoice_),
                     text("   "),
-                    text(" skip ") |
-                        (!shellIntegrationChoice_
-                             ? bgcolor(toFtx(theme.accent)) | color(toFtx(theme.bg))
-                             : color(toFtx(theme.muted))),
+                    choiceChip(" skip ", !shellIntegrationChoice_),
                 }),
                 text(""),
                 note(shellRcFile().empty()

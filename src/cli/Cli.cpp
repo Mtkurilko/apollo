@@ -204,7 +204,17 @@ int runConfig(std::vector<std::string> args, Config& config, Outcome& outcome) {
 
     if (sub == "unset") {
         if (!need(1, "unset <key>")) return 1;
-        if (!config.unset(args[0])) { std::cerr << "Not set: " << args[0] << "\n"; return 1; }
+        if (!config.unset(args[0])) {
+            // It may well be set — just not in the file we are allowed to edit.
+            if (config.file().get(args[0])) {
+                std::cerr << args[0] << " comes from a file brought in with `source`.\n"
+                          << "Edit that file, or override it here:\n"
+                          << "  apollo config set " << args[0] << " <value>\n";
+            } else {
+                std::cerr << "Not set: " << args[0] << "\n";
+            }
+            return 1;
+        }
         std::string error;
         if (!config.save(&error)) { std::cerr << error << "\n"; return 1; }
         std::cout << "unset " << args[0] << "\n";
@@ -340,6 +350,124 @@ int listCommands(const Config& config) {
     return 0;
 }
 
+// --- completion ------------------------------------------------------------
+//
+// The shell asks Apollo what could come next rather than carrying a copy of the
+// answer, so completion cannot fall behind the schema, the themes on disk or
+// the destinations in the config.
+
+std::vector<std::string> completionsFor(const std::vector<std::string>& words,
+                                        const Config& config) {
+    const auto commandNames = [&] {
+        CommandRegistry registry;
+        for (const auto& declared : config.commands()) {
+            registry.addDeclared(declared.name, declared.exec, declared.summary, "apollo.conf");
+        }
+        registry.scanDirectory(paths::commandsDir());
+        return registry.names();
+    };
+    const auto connectionNames = [&] {
+        std::vector<std::string> names;
+        for (const auto& conn : config.connections()) names.push_back(conn.name);
+        return names;
+    };
+
+    // words[0] is "apollo"; the word being completed is the last one.
+    const std::size_t at = words.size();
+
+    if (at <= 2) {
+        std::vector<std::string> out = {"connect", "config",  "setup", "doctor",
+                                        "commands", "completions", "--help", "--version"};
+        for (const auto& name : commandNames()) out.push_back(name);
+        return out;
+    }
+
+    const std::string& command = words[1];
+
+    if (command == "connect") return at == 3 ? connectionNames() : std::vector<std::string>{};
+    if (command == "completions") {
+        return at == 3 ? std::vector<std::string>{"zsh", "bash"} : std::vector<std::string>{};
+    }
+
+    if (command != "config") return {};
+
+    if (at == 3) {
+        return {"list",  "get",     "set",    "unset",  "path",   "edit",
+                "check", "add",     "remove", "default", "bind",  "unbind",
+                "binds", "actions", "connections"};
+    }
+
+    const std::string& sub = words[2];
+
+    if (at == 4) {
+        if (sub == "get" || sub == "set" || sub == "unset") {
+            std::vector<std::string> keys;
+            for (const auto& setting : Config::schema()) keys.push_back(setting.path);
+            for (const auto& conn : config.connections()) {
+                for (const char* field : {"host", "user", "key", "password", "port",
+                                          "remote_dir", "jump", "forward_agent"}) {
+                    keys.push_back("connection." + conn.name + "." + field);
+                }
+            }
+            return keys;
+        }
+        if (sub == "remove" || sub == "default") return connectionNames();
+        if (sub == "bind" || sub == "unbind") {
+            std::vector<std::string> actions;
+            for (const auto& action : knownActions()) actions.push_back(action.name);
+            return actions;
+        }
+        return {};
+    }
+
+    if (at == 5 && sub == "set") {
+        const std::string& key = words[3];
+        if (key == "decoration.theme") return Config::availableThemes();
+        if (const Config::Setting* setting = Config::setting(key)) {
+            if (!setting->choices.empty()) return setting->choices;
+            if (setting->type == Config::Setting::Type::Bool) return {"true", "false"};
+        }
+        return {};
+    }
+    return {};
+}
+
+int printCompletionScript(const std::string& shell) {
+    // Custom raw-string delimiters: both scripts contain `)"`, which would end
+    // an ordinary R"(...)" early and truncate them.
+    if (shell == "zsh") {
+        std::cout << R"APOLLO(#compdef apollo
+# Apollo completion for zsh. Install with:
+#   apollo completions zsh > "${fpath[1]}/_apollo"
+# It asks Apollo what could come next, so it cannot go stale.
+_apollo() {
+    local -a candidates
+    candidates=(${(f)"$(apollo __complete ${words[1,CURRENT]} 2>/dev/null)"})
+    compadd -a candidates
+}
+compdef _apollo apollo
+)APOLLO";
+        return 0;
+    }
+    if (shell == "bash") {
+        std::cout << R"APOLLO(# Apollo completion for bash. Install with:
+#   apollo completions bash > ~/.local/share/bash-completion/completions/apollo
+# or source it from your ~/.bashrc.
+# It asks Apollo what could come next, so it cannot go stale.
+_apollo() {
+    local candidates
+    candidates="$(apollo __complete "${COMP_WORDS[@]:0:$((COMP_CWORD + 1))}" 2>/dev/null)"
+    COMPREPLY=($(compgen -W "${candidates}" -- "${COMP_WORDS[COMP_CWORD]}"))
+}
+complete -F _apollo apollo
+)APOLLO";
+        return 0;
+    }
+
+    std::cerr << "Usage: apollo completions zsh|bash\n";
+    return 1;
+}
+
 } // namespace
 
 void printUsage() {
@@ -353,6 +481,7 @@ void printUsage() {
                  "  apollo doctor               check the installation\n"
                  "  apollo commands             list the commands you have added\n"
                  "  apollo <command>            run one of them\n"
+                 "  apollo completions zsh      shell completion, generated from the schema\n"
                  "  apollo --version, --help\n";
 }
 
@@ -411,6 +540,18 @@ Outcome dispatch(const std::vector<std::string>& args, Config& config) {
     }
     if (first == "doctor") {
         outcome.code = doctor(config) == 0 ? 0 : 1;
+        return outcome;
+    }
+    if (first == "completions") {
+        outcome.code = printCompletionScript(rest.empty() ? "" : rest[0]);
+        return outcome;
+    }
+    if (first == "__complete") {
+        // Called by the shell, one candidate per line. Never fails loudly:
+        // a broken completion should be silent, not noisy on every Tab.
+        for (const auto& candidate : completionsFor(rest, config)) {
+            std::cout << candidate << "\n";
+        }
         return outcome;
     }
     if (first == "setup" || first == "onboard") {

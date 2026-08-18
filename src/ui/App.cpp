@@ -65,7 +65,7 @@ App::App(Config& config, Options options)
         // Keep the shell in step, so the two panes never disagree about where
         // "here" is.
         if (term::Session* session = active(); session && session->connection().empty()) {
-            session->sendText("cd " + ssh::quoteRemote(path.string()) + "\r");
+            session->sendText("cd " + process::shellQuote(path.string()) + "\r");
         }
     };
     browser_.onOpenFile = [this](const fs::path& path) {
@@ -76,7 +76,7 @@ App::App(Config& config, Options options)
         if (!session) return;
 
         if (!editor.empty()) {
-            session->sendText(editor + " " + ssh::quoteRemote(path.string()) + "\r");
+            session->sendText(editor + " " + process::shellQuote(path.string()) + "\r");
             focus_ = Focus::Terminal;
             return;
         }
@@ -388,7 +388,7 @@ void App::act(const std::string& action, const std::vector<std::string>& args) {
                                    : (fromEnv && *fromEnv)          ? fromEnv
                                                                     : "";
         if (editor.empty()) { say("set general.editor, or $EDITOR, first", true); return; }
-        session->sendText(editor + " " + config_.path().string() + "\r");
+        session->sendText(editor + " " + process::shellQuote(config_.path().string()) + "\r");
         focus_ = Focus::Terminal;
         return;
     }
@@ -426,7 +426,7 @@ void App::act(const std::string& action, const std::vector<std::string>& args) {
         const fs::path target = paths::expandUser(argument);
         browser_.setPath(target);
         browser_.refresh(config_.browser());
-        session->sendText("cd " + ssh::quoteRemote(target.string()) + "\r");
+        session->sendText("cd " + process::shellQuote(target.string()) + "\r");
         return;
     }
 }

@@ -61,6 +61,7 @@ commented `~/.apollo/apollo.conf` and everything it asks can be changed later.
 | `apollo doctor` | Check the installation |
 | `apollo commands` | List the commands you have added |
 | `apollo <command>` | Run one of them |
+| `apollo completions zsh` | Shell completion |
 
 ### Keys
 
@@ -187,6 +188,17 @@ An unknown key, a value outside its range, a bind naming an action that does
 not exist — all of them are reported rather than ignored, in `apollo doctor`,
 in `apollo config check`, and on a Problems tab that appears in the editor only
 when there is something to say.
+
+### Completion
+
+```bash
+apollo completions zsh > "${fpath[1]}/_apollo"     # or
+apollo completions bash > ~/.local/share/bash-completion/completions/apollo
+```
+
+The script is four lines that ask Apollo what could come next, so completion
+covers every setting name, the values each one accepts, your themes, your SSH
+destinations and your own commands — and cannot fall behind them.
 
 ## Adding commands
 

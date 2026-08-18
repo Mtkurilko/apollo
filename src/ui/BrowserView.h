@@ -65,8 +65,11 @@ private:
     std::filesystem::path path_ = std::filesystem::current_path();
     std::vector<Entry> entries_;
     int selected_ = 0;
-    int scroll_ = 0;
-    int lastHeight_ = 20;
+    // Where the list is scrolled to, and how tall it was last drawn. Both are
+    // consequences of rendering rather than state anyone sets, which is why
+    // render() may adjust them while otherwise leaving the browser alone.
+    mutable int scroll_ = 0;
+    mutable int lastHeight_ = 20;
     bool lastShowHidden_ = false;
     std::string lastSort_;
     std::string error_;

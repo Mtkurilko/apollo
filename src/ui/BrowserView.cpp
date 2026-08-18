@@ -287,7 +287,7 @@ Element BrowserView::render(const Theme& theme,
                             bool focused,
                             int height,
                             int width) const {
-    const_cast<BrowserView*>(this)->lastHeight_ = height;
+    lastHeight_ = height;
 
     if (!error_.empty()) {
         return vbox({text(" " + error_) | color(toFtx(theme.error)), filler()});
@@ -297,14 +297,13 @@ Element BrowserView::render(const Theme& theme,
     }
 
     // Keep the selection in view without jumping it to the middle.
-    int& scroll = const_cast<BrowserView*>(this)->scroll_;
     const int visible = std::max(1, height);
-    if (selected_ < scroll) scroll = selected_;
-    if (selected_ >= scroll + visible) scroll = selected_ - visible + 1;
-    scroll = std::clamp(scroll, 0, std::max(0, static_cast<int>(entries_.size()) - visible));
+    if (selected_ < scroll_) scroll_ = selected_;
+    if (selected_ >= scroll_ + visible) scroll_ = selected_ - visible + 1;
+    scroll_ = std::clamp(scroll_, 0, std::max(0, static_cast<int>(entries_.size()) - visible));
 
     Elements rows;
-    for (int i = scroll; i < std::min(scroll + visible, static_cast<int>(entries_.size())); ++i) {
+    for (int i = scroll_; i < std::min(scroll_ + visible, static_cast<int>(entries_.size())); ++i) {
         const Entry& entry = entries_[static_cast<std::size_t>(i)];
         const bool isSelected = i == selected_;
 

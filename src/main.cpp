@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <clocale>
 #include <iostream>
 #include <string>
@@ -19,10 +20,13 @@ int main(int argc, char** argv) {
     config.load();
 
     // Only touch the filesystem for commands that are going to use a config.
-    // `apollo --help` should be answerable without writing anything.
-    const bool wantsConfig = args.empty() ||
-                             (args[0] != "--version" && args[0] != "-v" && args[0] != "version" &&
-                              args[0] != "--help" && args[0] != "-h" && args[0] != "help");
+    // `apollo --help` should be answerable without writing anything, and
+    // pressing Tab should certainly not create one.
+    static const std::vector<std::string> readOnly = {
+        "--version", "-v", "version", "--help", "-h", "help", "completions", "__complete",
+    };
+    const bool wantsConfig =
+        args.empty() || std::find(readOnly.begin(), readOnly.end(), args[0]) == readOnly.end();
     bool freshInstall = false;
     if (wantsConfig && !config.exists()) {
         std::string note;
