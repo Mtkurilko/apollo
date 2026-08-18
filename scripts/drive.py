@@ -165,13 +165,13 @@ class Grid:
 
 
 def main():
-    cols, rows, settle = 100, 30, 0.6
+    cols, rows, first_wait = 100, 30, 0.6
     args = sys.argv[1:]
     while args and args[0].startswith("--") and args[0] != "--":
         flag = args.pop(0)
         if flag == "--cols": cols = int(args.pop(0))
         elif flag == "--rows": rows = int(args.pop(0))
-        elif flag == "--wait": settle = float(args.pop(0))
+        elif flag == "--wait": first_wait = float(args.pop(0))
         else: sys.exit("unknown flag: " + flag)
 
     keys, apollo_args = [], []
@@ -217,13 +217,34 @@ def main():
             grid.feed(decoder.decode(chunk))
         return True
 
-    drain(settle)
+    def settle(idle=0.15, cap=2.0):
+        """Read until nothing has arrived for `idle` seconds.
+
+        A fixed delay is a coin toss: a keystroke that makes Apollo write its
+        config, re-read it and redraw takes longer than one that moves the
+        cursor. Waiting for the output to stop is what a person does.
+        """
+        deadline = time.time() + cap
+        while time.time() < deadline:
+            r, _, _ = select.select([fd], [], [], idle)
+            if not r:
+                return True
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                return False
+            if not chunk:
+                return False
+            grid.feed(decoder.decode(chunk))
+        return True
+
+    drain(first_wait)
     for key in keys:
         # <sh:...> runs a shell command mid-session, for checking things that
         # happen outside Apollo — a config file edited in another window, say.
         if key.startswith("<sh:") and key.endswith(">"):
             os.system(key[4:-1])
-            drain(1.2)
+            settle(0.3, 3.0)
             continue
         # Mouse, in SGR encoding, 1-based like the protocol itself:
         #   <click:X,Y>  <dblclick:X,Y>  <drag:X1,Y1,X2,Y2>  <wheel:X,Y,up|down>
@@ -235,7 +256,7 @@ def main():
                 drain(0.05)
                 os.write(fd, f"\x1b[<0;{x};{y}m".encode())
                 drain(0.05)
-            drain(0.5)
+            settle()
             continue
         if key.startswith("<drag:"):
             x1, y1, x2, y2 = (int(v) for v in key[6:-1].split(","))
@@ -244,13 +265,13 @@ def main():
             os.write(fd, f"\x1b[<32;{x2};{y2}M".encode())
             drain(0.05)
             os.write(fd, f"\x1b[<0;{x2};{y2}m".encode())
-            drain(0.5)
+            settle()
             continue
         if key.startswith("<wheel:"):
             x, y, direction = key[7:-1].split(",")
             code = 64 if direction == "up" else 65
             os.write(fd, f"\x1b[<{code};{x};{y}M".encode())
-            drain(0.35)
+            settle()
             continue
         # <size:COLSxROWS> resizes the window, which is the one thing a full
         # screen program has to get right and the easiest thing to get wrong.
@@ -260,10 +281,10 @@ def main():
             grid.reset()
             fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", int(h), int(w), 0, 0))
             os.kill(pid, signal.SIGWINCH)
-            drain(1.0)
+            settle(0.25, 3.0)
             continue
         os.write(fd, KEYS.get(key, key).encode())
-        drain(0.35)
+        settle()
 
     print(grid.text())
     if os.environ.get("DRIVE_CURSOR"):
