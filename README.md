@@ -4,16 +4,17 @@ A terminal workspace: a file browser and a real terminal, side by side, in one
 window that is entirely yours to configure.
 
 ```
- 1 zsh  2 lab
-╭─ ~/src/apollo ─────────────────╮ ╭─ zsh ──────────────────────────── vim ─╮
-│ ▸ build/                       │ │# Apollo                                │
-│ ▸ scripts/                   M │ │                                        │
-│ ▸ src/                       M │ │A terminal workspace: a file browser and│
-│ ▸ tests/                       │ │ a real terminal, side by side.         │
-│ · CMakeLists.txt          3.6K │ │~                                       │
-│ · README.md               8.1K │ │"README.md" 210L, 8104B                 │
-╰────────────────────────────────╯ ╰────────────────────────────────────────╯
- local  ~/src/apollo                        4 dirs, 2 files  Ctrl+Space Space
+╭──────────────────────────────╮ ╭───────────────────────────────────────────╮
+│ ~/Apollo/apollo_project      │ │ zsh                                   vim │
+├──────────────────────────────┤ ├───────────────────────────────────────────┤
+│ ▸ build/                     │ │# Apollo                                   │
+│ ▸ scripts/                   │ │                                           │
+│ ▸ src/                       │ │A terminal workspace: a file browser and a │
+│ ▸ tests/                     │ │real terminal, side by side, in one        │
+│ · CMakeLists.txt        3.6K │ │window that is entirely yours to configure.│
+│ · README.md            11.8K │ │"README.md" 322L, 11838B                   │
+╰──────────────────────────────╯ ╰───────────────────────────────────────────╯
+ local  ~/Apollo/apollo_project                              Ctrl+Space Space
 ```
 
 The terminal is a real terminal — a pty and a full escape sequence parser — so
@@ -163,16 +164,27 @@ palette, so `ls` and `git diff` belong to the same picture as the chrome.
 what it accepts and what the default was:
 
 ```
- apollo config  ~/.apollo/apollo.conf                                  v0.3.0
- General  Appearance  Terminal  Browser  Keys  Commands  Connections  About
- ▸ Theme                 nord                                                •
-   Border                rounded
-   Gaps                  1
-   Animate               ● on
- ─────────────────────────────────────────────────────────────────────────────
- Colour scheme  —  apollo · midnight · nord · gruvbox · catppuccin · solarized
-   decoration.theme   default: apollo
+╭────────────────────────────────────────────────────────────────────────────╮
+│ apollo config  ~/.apollo/apollo.conf                                v0.3.0 │
+├────────────────────────────────────────────────────────────────────────────┤
+│ General  Appearance  Terminal  Browser  Keys  Commands  Connections  About  │
+├────────────────────────────────────────────────────────────────────────────┤
+│ ▸ Theme                 nord                                             • │
+│   Border                rounded                                            │
+│   Gaps                  1                                                  │
+│   Animate               ● on                                               │
+│   Dim inactive pane     ● on                                               │
+│   Colour: Accent        ██ #7aa2f7                                       • │
+├────────────────────────────────────────────────────────────────────────────┤
+│ Colour scheme, built in or a file in ~/.apollo/themes  —  apollo · nord ·…  │
+│   decoration.theme   default: apollo   d resets it                         │
+├────────────────────────────────────────────────────────────────────────────┤
+│  Tab   section   ↑↓   move   Enter   change   e   editor   Esc   close      │
+╰────────────────────────────────────────────────────────────────────────────╯
 ```
+
+A dot marks anything you have changed from the default; the line underneath is
+what the highlighted setting does, what it accepts, and where it came from.
 
 Or from the shell:
 
