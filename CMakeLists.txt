@@ -41,6 +41,7 @@ add_library(apollo_core STATIC
     src/core/Paths.cpp
     src/core/ConfigFile.cpp
     src/core/Config.cpp
+    src/core/Control.cpp
     src/core/Layout.cpp
     src/core/Theme.cpp
     src/core/Keys.cpp
@@ -67,6 +68,7 @@ add_executable(apollo
     src/cli/Cli.cpp
     src/cli/Doctor.cpp
     src/ui/App.cpp
+    src/ui/Boot.cpp
     src/ui/TerminalView.cpp
     src/ui/BrowserView.cpp
     src/ui/Palette.cpp
@@ -86,8 +88,14 @@ target_compile_options(apollo PRIVATE
 # Tests: a single self-contained binary, no framework to install.
 # ---------------------------------------------------------------------------
 enable_testing()
-add_executable(apollo_tests tests/tests.cpp)
-target_link_libraries(apollo_tests PRIVATE apollo_core)
+# The tests link the dom half of FTXUI so the pieces that draw can be rendered
+# to an off-screen buffer and checked, rather than only being looked at.
+add_executable(apollo_tests
+    tests/tests.cpp
+    src/ui/Boot.cpp
+    src/ui/BrowserView.cpp
+    src/ui/Widgets.cpp)
+target_link_libraries(apollo_tests PRIVATE apollo_core ftxui::dom)
 target_compile_options(apollo_tests PRIVATE -Wall -Wextra)
 add_test(NAME apollo_tests COMMAND apollo_tests)
 

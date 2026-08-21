@@ -36,6 +36,7 @@ struct DecorationSettings {
     std::string border = "rounded"; // rounded | light | heavy | double | none
     int gaps = 1;
     bool animate = true;
+    bool boot = true; // the splash on the way in
     bool dimInactive = true;
     bool statusBar = true;
     bool titleBar = true;
@@ -57,14 +58,26 @@ struct TerminalSettings {
 
 struct BrowserSettings {
     bool show = true;
-    int width = 34;
+    int width = 42;
     std::string position = "left";  // left | right
     std::string layout = "split";   // split | stacked
     bool showHidden = false;
     std::string sort = "name"; // name | size | modified | type
+    bool sortReverse = false;
     bool dirsFirst = true;
     bool icons = true;
     bool gitStatus = true;
+    bool toolbar = true;  // back/forward, the path, sort and filter
+    bool details = true;  // the line about the selected entry
+
+    // How much the browser shows depends on how much room it has been given,
+    // the way a file manager reveals columns as you widen its window.
+    enum class Density { Compact, Normal, Wide };
+    static Density densityFor(int columns) {
+        if (columns < 30) return Density::Compact;
+        if (columns < 52) return Density::Normal;
+        return Density::Wide;
+    }
 };
 
 // A `command = name, exec, "summary"` line.

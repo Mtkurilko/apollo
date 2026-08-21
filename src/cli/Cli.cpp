@@ -9,6 +9,7 @@
 
 #include "cli/Doctor.h"
 #include "core/Commands.h"
+#include "core/Control.h"
 #include "core/Paths.h"
 #include "core/Process.h"
 
@@ -350,6 +351,39 @@ int listCommands(const Config& config) {
     return 0;
 }
 
+// --- talking to the Apollo we are already inside ---------------------------
+//
+// Without this, `apollo` typed in Apollo's own terminal starts a second Apollo
+// nested in the first. What it should do is act on the one already there.
+
+// The message for these arguments, or empty when the command is one that
+// belongs here — `apollo doctor` prints to this terminal and should not be
+// handed to the window around it.
+std::string controlMessageFor(const std::vector<std::string>& args) {
+    if (args.empty()) return "home";
+
+    const std::string& first = args[0];
+    const std::string rest = args.size() > 1 ? args[1] : "";
+
+    if (first == "quit" || first == "exit") return "quit";
+    if (first == "home") return "home";
+    if (first == "setup" || first == "onboard") return "setup";
+    if (first == "reload") return "reload";
+    if (first == "new-tab" || first == "tab") return "new-tab";
+    if (first == "connect") return rest.empty() ? "connect" : "connect " + rest;
+    // Only the bare `apollo config`, which opens the editor. The subcommands
+    // print to this terminal and stay here.
+    if (first == "config" && args.size() == 1) return "config";
+    if (first == "help" && args.size() == 1) return "help";
+
+    std::error_code ec;
+    const fs::path directory = paths::expandUser(first);
+    if (fs::is_directory(directory, ec)) {
+        return "open " + fs::weakly_canonical(directory, ec).string();
+    }
+    return "";
+}
+
 // --- completion ------------------------------------------------------------
 //
 // The shell asks Apollo what could come next rather than carrying a copy of the
@@ -482,7 +516,14 @@ void printUsage() {
                  "  apollo commands             list the commands you have added\n"
                  "  apollo <command>            run one of them\n"
                  "  apollo completions zsh      shell completion, generated from the schema\n"
-                 "  apollo --version, --help\n";
+                 "  apollo --version, --help\n"
+                 "\n"
+                 "Inside Apollo's own terminal these act on the running window:\n"
+                 "  apollo                      go back to the workspace\n"
+                 "  apollo <directory>          take both panes there\n"
+                 "  apollo quit                 leave Apollo\n"
+                 "  apollo config               open the settings\n"
+                 "  apollo new-tab              another terminal tab\n";
 }
 
 bool bootstrap(Config& config, std::string* note) {
@@ -521,6 +562,20 @@ bool bootstrap(Config& config, std::string* note) {
 
 Outcome dispatch(const std::vector<std::string>& args, Config& config) {
     Outcome outcome;
+
+    // Inside one of Apollo's own terminals, hand the command to the Apollo
+    // around us rather than starting another one inside it.
+    if (const std::string socket = control::socketFromEnvironment(); !socket.empty()) {
+        if (const std::string message = controlMessageFor(args); !message.empty()) {
+            if (control::send(socket, message)) return outcome;
+            // A socket file left behind by an instance that is gone: fall
+            // through and behave as though nothing was listening.
+        }
+    } else if (!args.empty() && (args[0] == "quit" || args[0] == "exit")) {
+        std::cerr << "Apollo is not running in this terminal.\n";
+        outcome.code = 1;
+        return outcome;
+    }
 
     if (args.empty()) {
         outcome.launch = true;

@@ -81,6 +81,7 @@ const std::vector<Config::Setting>& Config::schema() {
                            {"rounded", "light", "heavy", "double", "none"}, "Pane border style"));
         s.push_back(number("decoration.gaps", 1, 0, 4, "Blank columns between panes"));
         s.push_back(flag("decoration.animate", true, "Animate panel transitions and spinners"));
+        s.push_back(flag("decoration.boot", true, "Show the splash on the way in"));
         s.push_back(flag("decoration.dim_inactive", true, "Dim the pane that does not have focus"));
         s.push_back(flag("decoration.status_bar", true, "Show the bar along the bottom"));
         s.push_back(flag("decoration.title_bar", true, "Show pane titles"));
@@ -98,16 +99,20 @@ const std::vector<Config::Setting>& Config::schema() {
         s.push_back(str("terminal.word_chars", "_-./@~", "Extra characters counted as part of a word"));
 
         s.push_back(flag("browser.show", true, "Show the file browser"));
-        s.push_back(number("browser.width", 34, 16, 120, "Browser width, in columns"));
+        s.push_back(number("browser.width", 42, 16, 160, "Browser width, in columns"));
         s.push_back(choice("browser.position", "left", {"left", "right"},
                            "Which side the browser sits on"));
         s.push_back(choice("browser.layout", "split", {"split", "stacked"},
                            "Side by side, or the browser above the terminal"));
         s.push_back(flag("browser.show_hidden", false, "List dotfiles"));
-        s.push_back(choice("browser.sort", "name", {"name", "size", "modified", "type"}, "Sort order"));
+        s.push_back(choice("browser.sort", "name", {"name", "size", "modified", "type"},
+                           "Sort order"));
+        s.push_back(flag("browser.sort_reverse", false, "Sort the other way round"));
         s.push_back(flag("browser.dirs_first", true, "Group directories above files"));
         s.push_back(flag("browser.icons", true, "Show file type icons"));
         s.push_back(flag("browser.git_status", true, "Mark files changed since the last commit"));
+        s.push_back(flag("browser.toolbar", true, "Show the browser's toolbar"));
+        s.push_back(flag("browser.details", true, "Describe the selected entry underneath"));
 
         for (const auto& key : Theme::colorKeys()) {
             s.push_back(str("colors." + key, "", "Override the theme's " + key + " colour",
@@ -185,6 +190,7 @@ const std::vector<Bind>& Config::defaultBinds() {
         // and the rest still belong to whatever is running in the terminal.
         const std::vector<std::pair<std::string, std::vector<std::string>>> table = {
             {", F1",              {"help"}},
+            {", F10",             {"quit"}},
             {"SHIFT, PAGEUP",     {"scroll_up"}},
             {"SHIFT, PAGEDOWN",   {"scroll_down"}},
 
@@ -212,6 +218,12 @@ const std::vector<Bind>& Config::defaultBinds() {
             {"LEADER, HOME",      {"scroll_top"}},
             {"LEADER, END",       {"scroll_bottom"}},
             {"LEADER, D",         {"disconnect"}},
+            {"LEADER, F",         {"browser_filter"}},
+            {"LEADER, BRACKETLEFT",  {"browser_back"}},
+            {"LEADER, BRACKETRIGHT", {"browser_forward"}},
+            {"LEADER, U",         {"browser_up"}},
+            {"LEADER, Y",         {"copy_path"}},
+            {"LEADER, V",         {"paste_path"}},
         };
 
         std::vector<Bind> out;
@@ -269,11 +281,14 @@ terminal {
 
 browser {
     show        = true
-    width       = 34
-    position    = left
+    width       = 42
+    position    = left          # or right
+    layout      = split         # or stacked, with the browser on top
     show_hidden = false
     sort        = name
     icons       = true
+    toolbar     = true          # back, forward, up, the path, sort, filter
+    details     = true          # what the selected entry is, underneath
 }
 
 # ---------------------------------------------------------------------------
@@ -428,6 +443,7 @@ void Config::derive() {
     decoration_.border = text("decoration.border", "rounded");
     decoration_.gaps = std::clamp(num("decoration.gaps", 1), 0, 4);
     decoration_.animate = yes("decoration.animate", true);
+    decoration_.boot = yes("decoration.boot", true);
     decoration_.dimInactive = yes("decoration.dim_inactive", true);
     decoration_.statusBar = yes("decoration.status_bar", true);
     decoration_.titleBar = yes("decoration.title_bar", true);
@@ -445,14 +461,17 @@ void Config::derive() {
 
     browser_ = BrowserSettings{};
     browser_.show = yes("browser.show", true);
-    browser_.width = std::clamp(num("browser.width", 34), 16, 120);
+    browser_.width = std::clamp(num("browser.width", 42), 16, 160);
     browser_.position = text("browser.position", "left");
     browser_.layout = text("browser.layout", "split");
     browser_.showHidden = yes("browser.show_hidden", false);
     browser_.sort = text("browser.sort", "name");
+    browser_.sortReverse = yes("browser.sort_reverse", false);
     browser_.dirsFirst = yes("browser.dirs_first", true);
     browser_.icons = yes("browser.icons", true);
     browser_.gitStatus = yes("browser.git_status", true);
+    browser_.toolbar = yes("browser.toolbar", true);
+    browser_.details = yes("browser.details", true);
 
     // Anything set in a known section that the schema does not know about is
     // almost always a typo, and silently ignoring it is how config files rot.
