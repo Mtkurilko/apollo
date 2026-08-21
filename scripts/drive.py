@@ -26,8 +26,11 @@ KEYS = {
     "<enter>": "\r", "<esc>": "\x1b", "<tab>": "\t", "<space>": " ",
     "<up>": "\x1b[A", "<down>": "\x1b[B", "<right>": "\x1b[C", "<left>": "\x1b[D",
     "<home>": "\x1b[H", "<end>": "\x1b[F", "<pgup>": "\x1b[5~", "<pgdn>": "\x1b[6~",
-    "<bs>": "\x7f", "<del>": "\x1b[3~", "<leader>": "\x00", "<f1>": "\x1bOP",
+    "<bs>": "\x7f", "<del>": "\x1b[3~", "<leader>": "\x00",
     "<s-tab>": "\x1b[Z", "<s-pgup>": "\x1b[5;2~",
+    "<f1>": "\x1bOP", "<f2>": "\x1bOQ", "<f3>": "\x1bOR", "<f4>": "\x1bOS",
+    "<f5>": "\x1b[15~", "<f6>": "\x1b[17~", "<f7>": "\x1b[18~", "<f8>": "\x1b[19~",
+    "<f9>": "\x1b[20~", "<f10>": "\x1b[21~", "<f11>": "\x1b[23~", "<f12>": "\x1b[24~",
 }
 for c in "abcdefghijklmnopqrstuvwxyz":
     KEYS[f"<c-{c}>"] = chr(ord(c) - 96)
@@ -217,12 +220,17 @@ def main():
             grid.feed(decoder.decode(chunk))
         return True
 
-    def settle(idle=0.15, cap=2.0):
+    def settle(idle=0.05, cap=0.6):
         """Read until nothing has arrived for `idle` seconds.
 
         A fixed delay is a coin toss: a keystroke that makes Apollo write its
         config, re-read it and redraw takes longer than one that moves the
         cursor. Waiting for the output to stop is what a person does.
+
+        The cap matters as much as the idle time. Apollo redraws on a timer, so
+        the output never goes quiet for long, and a generous cap turns every
+        keystroke into a slow one — slow enough that type-to-find times out
+        between letters and the test measures the harness instead of the app.
         """
         deadline = time.time() + cap
         while time.time() < deadline:
@@ -291,13 +299,32 @@ def main():
         print(f"[cursor at row {grid.y + 1}, col {grid.x + 1}; shape {grid.shape}]",
               file=sys.stderr)
 
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    _, status = os.waitpid(pid, 0)
-    if os.WIFEXITED(status):
-        print(f"\n[apollo exited {os.WEXITSTATUS(status)}]", file=sys.stderr)
+    # Whether it was still up tells us as much as the exit code: a quit that
+    # did not quit looks exactly like a quit that did, from the last frame.
+    # Give it a moment first — shutting down means joining threads and hanging
+    # up a pty, and calling that "still running" would be measuring the clock.
+    deadline = time.time() + 2.0
+    status = None
+    while time.time() < deadline:
+        done, got = os.waitpid(pid, os.WNOHANG)
+        if done == pid:
+            status = got
+            break
+        drain(0.05)
+
+    killed = status is None
+    if killed:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        _, status = os.waitpid(pid, 0)
+    if killed:
+        print("[apollo was still running and had to be killed]", file=sys.stderr)
+    elif os.WIFEXITED(status):
+        print(f"[apollo exited {os.WEXITSTATUS(status)}]", file=sys.stderr)
+    else:
+        print(f"[apollo ended on signal {os.WTERMSIG(status)}]", file=sys.stderr)
     os.close(fd)
 
 

@@ -4,17 +4,21 @@ A terminal workspace: a file browser and a real terminal, side by side, in one
 window that is entirely yours to configure.
 
 ```
-╭──────────────────────────────╮ ╭───────────────────────────────────────────╮
-│ ~/Apollo/apollo_project      │ │ zsh                                   vim │
-├──────────────────────────────┤ ├───────────────────────────────────────────┤
-│ ▸ build/                     │ │# Apollo                                   │
-│ ▸ scripts/                   │ │                                           │
-│ ▸ src/                       │ │A terminal workspace: a file browser and a │
-│ ▸ tests/                     │ │real terminal, side by side, in one        │
-│ · CMakeLists.txt        3.6K │ │window that is entirely yours to configure.│
-│ · README.md            11.8K │ │"README.md" 322L, 11838B                   │
-╰──────────────────────────────╯ ╰───────────────────────────────────────────╯
- local  ~/Apollo/apollo_project                              Ctrl+Space Space
+╭────────────────────────────────────────────╮ ╭───────────────────────────────────────────╮
+│ ~/Apollo/apollo_project                    │ │ zsh                                   vim │
+├────────────────────────────────────────────┤ ├───────────────────────────────────────────┤
+│ ←  →  ↑ …/apollo_project         name ↓  / │ │# Apollo                                   │
+│ ▸ build/                                   │ │                                           │
+│ ▸ scripts/                        M        │ │A terminal workspace: a file browser and a │
+│ ▸ src/                            ?        │ │real terminal, side by side, in one        │
+│ ▸ tests/                          M        │ │window that is entirely yours to configure.│
+│ ◇ apollo.properties                   167B │ │~                                          │
+│ ≡ CMakeLists.txt                  M   3.9K │ │"README.md" 322L, 11838B                   │
+├────────────────────────────────────────────┤ │                                           │
+│ ▸ build                                    │ │                                           │
+│ drwxr-xr-x  11:37                          │ │                                           │
+╰────────────────────────────────────────────╯ ╰───────────────────────────────────────────╯
+ local  ~/Apollo/apollo_project              Leader Space commands · F1 keys · Leader , config
 ```
 
 The terminal is a real terminal — a pty and a full escape sequence parser — so
@@ -80,8 +84,11 @@ program running in the terminal.
 | `Leader ↑` / `↓` | Jump to the previous or next command's output |
 | `Leader S` | Side-by-side or stacked |
 | `Leader ←` / `→` | Resize the panes |
+| `Leader U` / `[` / `]` | Up a directory, back, forward |
+| `Leader Y` / `V` | Copy the current path, go to the one on the clipboard |
 | `Shift+PgUp` / `PgDn` | Scroll back |
 | `F1` | The full key reference |
+| `F10` | Leave Apollo |
 
 Drag to select, and the selection is copied. The wheel scrolls. Double click
 opens. Click a tab to switch to it. Every one of these is a line in the config,
@@ -90,6 +97,51 @@ and `unbind` removes any of them.
 The keys that rearrange the panes — show the browser, stack it, resize it, show
 dotfiles — write to the config as they go, so what you set up with your hands
 is what you get back next time.
+
+## The browser
+
+The pane is a file manager, not a list. Drag the divider between the panes to
+resize it, and where it lands is where it stays. Its toolbar has back, forward
+and up, the path — click it to copy — the current sort, and the filter.
+
+Two ways to find something, because they are two different jobs:
+
+- **Type a name.** Letters move the selection to the first match, and keep
+  moving it as you type. A pause starts a new search.
+- **Press `/`.** That narrows the list instead, fuzzily, and the status bar
+  says how much of the directory survived.
+
+What it shows depends on how much room you give it. Narrow, it is names. Wider,
+sizes and git status. Wider still, dates and a mark on the pane. Files are
+coloured and marked by what they are — directories, code, documents, data,
+images, archives, media — and the line underneath describes whatever is
+selected: permissions, size, when it changed.
+
+`browser.sort` cycles through name, size, modified and type; `browser.sort_reverse`
+turns any of them round. Both are on the toolbar, in the palette, and in the
+config.
+
+## Apollo from inside Apollo
+
+Running `apollo` in Apollo's own terminal used to start a second Apollo nested
+in the first. It now talks to the one already there, over a private socket that
+each instance creates for the shells it starts:
+
+| | |
+| --- | --- |
+| `apollo` | Back to the workspace, both panes |
+| `apollo <directory>` | Take both panes there |
+| `apollo quit` | Leave |
+| `apollo config` | Open the settings |
+| `apollo new-tab` | Another terminal tab |
+| `apollo connect lab` | Another tab, connected |
+
+Everything else — `apollo doctor`, `apollo config list`, your own commands —
+prints in the terminal where you typed it, as it should.
+
+The socket lives in `/tmp`, is named for your user and the process, and is
+created readable by nobody else. Sockets left behind by an instance that was
+killed rather than closed are swept up the next time Apollo starts.
 
 ## Configuring it
 
@@ -107,9 +159,11 @@ general {
 }
 
 decoration {
-    theme  = nord              # or apollo, midnight, gruvbox, catppuccin, solarized, paper
-    border = rounded
-    gaps   = 1
+    theme   = nord             # or apollo, midnight, gruvbox, catppuccin, solarized, paper
+    border  = rounded
+    gaps    = 1
+    animate = true
+    boot    = true             # the splash on the way in; false skips it
 }
 
 colors {

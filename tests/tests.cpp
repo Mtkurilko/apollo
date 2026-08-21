@@ -4,6 +4,9 @@
 // language, key decoding, the terminal grid and the escape parser — and those
 // are exactly the parts that would be miserable to check by hand.
 
+#include <ftxui/dom/node.hpp>
+#include <ftxui/screen/screen.hpp>
+
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
@@ -19,6 +22,9 @@
 #include "core/Layout.h"
 #include "core/Paths.h"
 #include "core/Theme.h"
+#include "ui/Boot.h"
+#include "ui/BrowserView.h"
+#include "ui/Widgets.h"
 #include "term/Screen.h"
 #include "term/VtParser.h"
 
@@ -759,6 +765,150 @@ void testLayout() {
     expect(layout::compute(hidden).terminalCols, 78, "and the terminal takes the whole width");
 }
 
+// --- the splash ------------------------------------------------------------
+
+// Renders an element to an off-screen buffer and returns it as plain text, so
+// the drawing code can be checked without a terminal in front of it.
+std::string draw(ftxui::Element element, int width, int height) {
+    auto screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(width),
+                                        ftxui::Dimension::Fixed(height));
+    ftxui::Render(screen, element);
+    return screen.ToString();
+}
+
+void testBoot() {
+    section("the splash");
+
+    const auto& rows = ui::Boot::mark();
+    expect(rows.size(), std::size_t(6), "the word is six rows tall");
+
+    bool even = true;
+    for (const auto& row : rows) even = even && ui::displayWidth(row) == ui::Boot::markWidth();
+    check(even, "every row is exactly as wide as the others");
+    check(ui::Boot::markWidth() > 30, "and wide enough to be a word");
+
+    const Theme theme = *Theme::builtin("apollo");
+    DecorationSettings decoration;
+
+    ui::Boot boot;
+    boot.start({{"config", "~/.apollo/apollo.conf"}, {"opens", "~/src"}}, false);
+    check(boot.running(), "it is up as soon as it starts");
+
+    const std::string full = draw(boot.render(theme, decoration, 90, 26), 90, 26);
+    check(full.find("terminal workspace") != std::string::npos, "it says what Apollo is");
+    check(full.find("~/.apollo/apollo.conf") != std::string::npos, "and where the config is");
+    check(full.find("press any key") != std::string::npos, "and how to get past it");
+    // The block letters are drawn from these two characters and nothing else.
+    check(full.find("\u2588") != std::string::npos, "the word is drawn in block letters");
+
+    // A window too small for the letters still has to say something.
+    const std::string small = draw(boot.render(theme, decoration, 30, 8), 30, 8);
+    check(small.find("APOLLO") != std::string::npos, "a small window gets the name in plain text");
+    check(small.find("\u2588") == std::string::npos, "and not letters it has no room for");
+
+    boot.dismiss();
+    check(!boot.running(), "a key puts it away");
+}
+
+// --- the file browser ------------------------------------------------------
+
+void testBrowser() {
+    section("the file browser");
+
+    // Density is what decides which columns appear, so the thresholds are
+    // worth pinning down: they are the difference between a name column and a
+    // name column with the date squeezed out of it.
+    using Density = BrowserSettings::Density;
+    check(BrowserSettings::densityFor(20) == Density::Compact, "a narrow pane is compact");
+    check(BrowserSettings::densityFor(40) == Density::Normal, "a middling one is normal");
+    check(BrowserSettings::densityFor(60) == Density::Wide, "a wide one is wide");
+
+    const auto root = std::filesystem::temp_directory_path() / "apollo-test-browser";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "zeta");
+    std::filesystem::create_directories(root / "alpha");
+    for (const auto& [name, size] : std::vector<std::pair<std::string, int>>{
+             {"beta.txt", 10}, {"gamma.md", 300}, {".hidden", 5}}) {
+        std::ofstream out(root / name);
+        out << std::string(static_cast<std::size_t>(size), 'x');
+    }
+
+    BrowserSettings settings;
+    settings.showHidden = false;
+
+    ui::BrowserView browser;
+    browser.setPath(root, false);
+    browser.refresh(settings);
+    expect(browser.statusLine(), std::string("2 dirs, 2 files"), "it lists what is there");
+
+    settings.showHidden = true;
+    browser.refresh(settings);
+    expect(browser.statusLine(), std::string("2 dirs, 3 files"), "dotfiles appear when asked for");
+    settings.showHidden = false;
+    browser.refresh(settings);
+
+    // Directories first, then names, case-insensitively.
+    check(browser.selected() && browser.selected()->name == "alpha", "directories come first");
+    browser.moveSelection(1);
+    check(browser.selected() && browser.selected()->name == "zeta", "and are sorted among themselves");
+    browser.moveSelection(1);
+    check(browser.selected() && browser.selected()->name == "beta.txt", "then the files");
+
+    settings.sortReverse = true;
+    browser.refresh(settings);
+    browser.moveSelection(-99);
+    check(browser.selected() && browser.selected()->name == "zeta", "reversing turns it round");
+    settings.sortReverse = false;
+    browser.refresh(settings);
+
+    settings.dirsFirst = false;
+    settings.sort = "size";
+    browser.refresh(settings);
+    browser.moveSelection(-99);
+    check(browser.selected() && browser.selected()->name == "gamma.md",
+          "sorting by size puts the biggest first");
+    settings.dirsFirst = true;
+    settings.sort = "name";
+    browser.refresh(settings);
+
+    // History. Going somewhere records where we were; going back returns.
+    ui::BrowserView history;
+    history.setPath(root, false);
+    history.refresh(settings);
+    check(!history.canGoBack(), "there is nowhere to go back to at the start");
+
+    history.setPath(root / "alpha");
+    history.refresh(settings);
+    check(history.canGoBack(), "moving somewhere records where we were");
+    check(!history.canGoForward(), "and clears the forward trail");
+
+    check(history.goBack(settings), "back goes back");
+    expect(history.path(), std::filesystem::weakly_canonical(root), "to where we were");
+    check(history.canGoForward(), "and forward now leads somewhere");
+    check(history.goForward(settings), "forward goes forward");
+    expect(history.path(), std::filesystem::weakly_canonical(root / "alpha"), "to where we left");
+
+    // Filtering narrows the list; clearing it puts everything back.
+    ui::BrowserView filtered;
+    filtered.setPath(root, false);
+    filtered.refresh(settings);
+    filtered.beginFilter();
+    check(filtered.filtering(), "the filter opens");
+    for (const char c : std::string("beta")) {
+        filtered.onFilterKey(decodeKey(std::string(1, c)), std::string(1, c), settings);
+    }
+    check(filtered.statusLine().find("matching 'beta'") != std::string::npos,
+          "and says what it is matching");
+    check(filtered.selected() && filtered.selected()->name == "beta.txt",
+          "leaving only what matched");
+
+    filtered.onFilterKey(decodeKey("\x1B"), "\x1B", settings);
+    check(!filtered.filtering(), "escape closes it");
+    expect(filtered.statusLine(), std::string("2 dirs, 2 files"), "and everything comes back");
+
+    std::filesystem::remove_all(root);
+}
+
 void testPaths() {
     section("paths");
 
@@ -783,6 +933,8 @@ int main() {
 
     testPaths();
     testLayout();
+    testBoot();
+    testBrowser();
     testConfigFile();
     testTheme();
     testKeys();
