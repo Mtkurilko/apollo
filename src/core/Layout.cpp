@@ -4,6 +4,12 @@
 
 namespace apollo::layout {
 
+int maxBrowserWidth(const Request& request) {
+    const int width = std::max(1, request.width);
+    const int frameH = request.border == "none" ? 0 : 2;
+    return std::max(16, width - std::max(0, request.gaps) - frameH - kUsableCols);
+}
+
 Panes compute(const Request& request) {
     const int width = std::max(1, request.width);
     const int height = std::max(1, request.height);
@@ -34,9 +40,13 @@ Panes compute(const Request& request) {
     const int available =
         std::max(1, height - (panes.statusBar ? 1 : 0) - (panes.tabBar ? 1 : 0));
     const int gaps = std::max(0, request.gaps);
-    const int wantedBrowser = std::clamp(request.browserWidth, 16, std::max(16, width / 2));
+    // The browser is shown only if it can have a width worth having: the one
+    // that was asked for, or the usable minimum, whichever is smaller.
+    const int floorWidth = std::min(std::max(1, request.browserWidth), kUsableBrowserCols);
+    const int wantedBrowser =
+        std::clamp(request.browserWidth, floorWidth, std::max(floorWidth, maxBrowserWidth(request)));
 
-    const bool roomBeside = width - wantedBrowser - gaps - frameH() >= kUsableCols;
+    const bool roomBeside = width - floorWidth - gaps - frameH() >= kUsableCols;
     const bool roomAbove = available >= 2 * frameV() + kUsableRows + 3;
     const bool showBrowser = request.browserVisible && (request.stacked ? roomAbove : roomBeside);
 

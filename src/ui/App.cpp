@@ -26,6 +26,7 @@ namespace {
 // anything a terminal sends, which is why they are spelled out in full.
 const Event kTick = Event::Special("apollo:tick");
 const Event kOutput = Event::Special("apollo:output");
+const Event kControl = Event::Special("apollo:control");
 
 // Just enough base64 to receive an OSC 52 clipboard payload.
 std::string decodeBase64(const std::string& text) {
@@ -88,6 +89,11 @@ App::App(Config& config, Options options)
         }
     };
 
+    browser_.onCopyPath = [this] { copyToClipboard(browser_.path().string()); };
+    browser_.onPastePath = [this] { act("paste_path", {}); };
+    browser_.onCycleSort = [this] { act("browser_sort", {}); };
+    browser_.onToggleHidden = [this] { act("toggle_hidden", {}); };
+
     configView_.onChanged = [this] { applyConfig(); };
     configView_.onEditExternally = [this] { act("edit_config", {}); };
     onboard_.onChanged = [this] { applyConfig(); };
@@ -106,7 +112,16 @@ App::~App() {
 
 bool App::browserVisible() const { return config_.browser().show; }
 bool App::stacked() const { return config_.browser().layout == "stacked"; }
-int App::browserWidth() const { return config_.browser().width; }
+int App::browserWidth() const {
+    return dragWidth_ >= 0 ? dragWidth_ : config_.browser().width;
+}
+
+int App::dividerColumn(const Layout& layout) const {
+    if (layout.browserWidth == 0 || layout.stacked) return -1;
+    return config_.browser().position == "right"
+               ? layout.width - layout.browserWidth - config_.decoration().gaps
+               : layout.browserWidth - 1;
+}
 
 bool App::put(const std::string& path, const std::string& value) {
     std::string problem;
@@ -162,6 +177,9 @@ bool App::newTab(const Connection* connection, const std::string& initialCommand
     term::Session::Options options;
     options.scrollback = config_.terminal().scrollback;
     options.cwd = browser_.path().string();
+    // So `apollo ...` typed in this shell reaches this Apollo rather than
+    // starting a second one inside it.
+    if (control_.running()) options.env.push_back("APOLLO_SOCKET=" + control_.path());
 
     if (connection) {
         // A remote tab is a real ssh session in a pty. Nothing about it is
@@ -319,8 +337,75 @@ void App::act(const std::string& action, const std::vector<std::string>& args) {
         }
         return;
     }
+    if (action == "browser_back") {
+        if (!browser_.goBack(config_.browser())) say("nowhere to go back to");
+        focus_ = Focus::Browser;
+        return;
+    }
+    if (action == "browser_forward") {
+        if (!browser_.goForward(config_.browser())) say("nowhere to go forward to");
+        focus_ = Focus::Browser;
+        return;
+    }
+    if (action == "browser_up") {
+        browser_.goUp(config_.browser());
+        focus_ = Focus::Browser;
+        return;
+    }
+    if (action == "browser_filter") {
+        if (!browserVisible()) put("browser.show", "true");
+        focus_ = Focus::Browser;
+        browser_.beginFilter();
+        return;
+    }
+    if (action == "browser_sort") {
+        static const std::vector<std::string> order = {"name", "size", "modified", "type"};
+        const auto at = std::find(order.begin(), order.end(), config_.browser().sort);
+        const std::size_t next = at == order.end() ? 0 : (at - order.begin() + 1) % order.size();
+        if (put("browser.sort", order[next])) {
+            browser_.refresh(config_.browser());
+            say("sorted by " + order[next]);
+        }
+        return;
+    }
+    if (action == "browser_reverse") {
+        if (put("browser.sort_reverse", config_.browser().sortReverse ? "false" : "true")) {
+            browser_.refresh(config_.browser());
+            say(config_.browser().sortReverse ? "reversed" : "back to ascending");
+        }
+        return;
+    }
+    if (action == "copy_path") {
+        copyToClipboard(browser_.path().string());
+        return;
+    }
+    if (action == "paste_path") {
+        std::string wanted = clipboard();
+        // A path copied from anywhere tends to arrive with a newline on it.
+        while (!wanted.empty() && (wanted.back() == '\n' || wanted.back() == '\r')) {
+            wanted.pop_back();
+        }
+        if (wanted.empty()) { say("the clipboard is empty"); return; }
+
+        fs::path target = paths::expandUser(wanted);
+        std::error_code ec;
+        if (fs::is_regular_file(target, ec)) target = target.parent_path();
+        if (!fs::is_directory(target, ec)) {
+            say("not a directory: " + elide(wanted, 40), true);
+            return;
+        }
+        act("cd", {target.string()});
+        say("went to " + paths::contractUser(target));
+        return;
+    }
     if (action == "grow_pane") {
-        put("browser.width", std::to_string(std::min(browserWidth() + 4, measure().width / 2)));
+        const Layout layout = measure();
+        layout::Request request;
+        request.width = layout.width;
+        request.gaps = config_.decoration().gaps;
+        request.border = config_.decoration().border;
+        put("browser.width",
+            std::to_string(std::min(browserWidth() + 4, layout::maxBrowserWidth(request))));
         return;
     }
     if (action == "shrink_pane") {
@@ -427,8 +512,34 @@ void App::act(const std::string& action, const std::vector<std::string>& args) {
         browser_.setPath(target);
         browser_.refresh(config_.browser());
         session->sendText("cd " + process::shellQuote(target.string()) + "\r");
+        pendingCwd_ = browser_.path();
+        pendingCwdUntil_ = std::chrono::steady_clock::now() + std::chrono::seconds(3);
         return;
     }
+}
+
+void App::handleControl(const std::string& message) {
+    const auto space = message.find(' ');
+    const std::string verb = message.substr(0, space);
+    const std::string argument = space == std::string::npos ? "" : message.substr(space + 1);
+
+    if (verb == "home") {
+        // What `apollo` on its own has always meant: back to the workspace,
+        // both panes together.
+        act("cd", {config_.general().workspace});
+        say("home");
+        return;
+    }
+    if (verb == "open" && !argument.empty()) { act("cd", {argument}); return; }
+    if (verb == "quit") { act("quit", {}); return; }
+    if (verb == "config") { configView_.open(); return; }
+    if (verb == "setup") { onboard_.start(); return; }
+    if (verb == "help") { helpOpen_ = true; return; }
+    if (verb == "new-tab") { act("new_tab", {}); return; }
+    if (verb == "connect") { act("connect", {argument}); return; }
+    if (verb == "reload") { act("reload_config", {}); return; }
+
+    say("Apollo did not understand '" + elide(message, 40) + "'", true);
 }
 
 bool App::runBind(const KeyChord& chord) {
@@ -504,8 +615,17 @@ void App::tick() {
     // The shell told us where it is; follow it.
     if (config_.general().followCwd) {
         if (term::Session* session = active(); session && !session->cwd().empty()) {
-            const fs::path reported = session->cwd();
-            if (reported != browser_.path() && fs::is_directory(reported)) {
+            std::error_code ec;
+            const fs::path reported = fs::weakly_canonical(session->cwd(), ec);
+
+            // A cd Apollo asked for is in flight: ignore what the shell says
+            // until it has caught up, or the browser snaps back for a frame.
+            if (!pendingCwd_.empty()) {
+                if (reported == pendingCwd_ ||
+                    std::chrono::steady_clock::now() > pendingCwdUntil_) {
+                    pendingCwd_.clear();
+                }
+            } else if (reported != browser_.path() && fs::is_directory(reported, ec)) {
                 browser_.setPath(reported);
                 browser_.refresh(config_.browser());
             }
@@ -545,13 +665,52 @@ bool App::onMouse(const Event& event) {
     const bool browserOnLeft = config_.browser().position != "right";
     const int browserLeft = browserOnLeft ? 0 : layout.width - layout.browserWidth;
     const int browserRight = browserLeft + layout.browserWidth;
+    const bool inBrowserColumns =
+        layout.browserWidth > 0 && !layout.stacked && mouse.x >= browserLeft &&
+        mouse.x < browserRight;
 
-    // Scroll wheel: the browser moves its selection, the terminal its history.
+    // The grab zone straddles the two pane borders and the gap between them,
+    // so it is a few columns wide even when the gap is zero.
+    const int divider = dividerColumn(layout);
+    const bool onDivider =
+        divider >= 0 && mouse.x >= divider && mouse.x <= divider + decoration.gaps + 1;
+
+    // --- resizing ---------------------------------------------------------
+    if (draggingDivider_) {
+        if (mouse.motion == Mouse::Released) {
+            draggingDivider_ = false;
+            if (dragWidth_ >= 0) {
+                const int settled = dragWidth_;
+                dragWidth_ = -1;
+                put("browser.width", std::to_string(settled));
+            }
+        } else {
+            // Clamped to what the layout will actually honour, so the pane
+            // follows the pointer instead of stopping while the number climbs.
+            layout::Request request;
+            request.width = layout.width;
+            request.gaps = decoration.gaps;
+            request.border = decoration.border;
+
+            const int wanted = browserOnLeft ? mouse.x + 1 : layout.width - mouse.x;
+            dragWidth_ = std::clamp(wanted, 16, layout::maxBrowserWidth(request));
+        }
+        return true;
+    }
+
+    if (mouse.button == Mouse::Left && mouse.motion == Mouse::Pressed && onDivider) {
+        draggingDivider_ = true;
+        dragWidth_ = layout.browserWidth;
+        return true;
+    }
+
+    // --- the wheel --------------------------------------------------------
     if (mouse.button == Mouse::WheelUp || mouse.button == Mouse::WheelDown) {
         const int direction = mouse.button == Mouse::WheelUp ? 1 : -1;
-        if (layout.browserWidth > 0 && !layout.stacked && mouse.x >= browserLeft &&
-            mouse.x < browserRight) {
-            browser_.moveSelection(-direction);
+        if (inBrowserColumns) {
+            // The list scrolls and the selection stays put, as it does in a
+            // file manager; the keyboard is what moves the selection.
+            browser_.scrollBy(-direction * 3);
             return true;
         }
         if (term::Session* session = active()) {
@@ -565,10 +724,17 @@ bool App::onMouse(const Event& event) {
         return true;
     }
 
+    // --- hover ------------------------------------------------------------
+    if (inBrowserColumns) {
+        browser_.hover(mouse.y - topOffset, mouse.x - browserLeft - frame, config_.browser());
+    } else {
+        browser_.clearHover();
+    }
+
     if (mouse.button != Mouse::Left) return true;
 
-    // The tab strip, when there is one.
-    if (tabs_.size() > 1 && mouse.y == 0) {
+    // --- the tab strip ----------------------------------------------------
+    if (tabs_.size() > 1 && decoration.statusBar && mouse.y == 0) {
         if (mouse.motion != Mouse::Pressed) return true;
         const std::vector<int> edges = tabEdges();
         for (std::size_t i = 0; i + 1 < edges.size(); ++i) {
@@ -581,18 +747,18 @@ bool App::onMouse(const Event& event) {
         return true;
     }
 
-    const bool inBrowser = layout.browserWidth > 0 && !layout.stacked && mouse.x >= browserLeft &&
-                           mouse.x < browserRight;
-    if (inBrowser) {
+    // --- the browser ------------------------------------------------------
+    if (inBrowserColumns) {
         focus_ = Focus::Browser;
         if (mouse.motion == Mouse::Pressed) {
             // Terminals do not report double clicks, so time them here: a
             // second press on the same row inside 400ms opens the entry.
             const int row = mouse.y - topOffset;
+            const int column = mouse.x - browserLeft - frame;
             const auto now = std::chrono::steady_clock::now();
             const bool doubleClick = row == lastClickRow_ &&
                                      now - lastClick_ < std::chrono::milliseconds(400);
-            browser_.onClick(row, doubleClick);
+            browser_.onClick(row, column, doubleClick, config_.browser());
             // Reset after acting, or a third click would count as another pair.
             lastClick_ = doubleClick ? std::chrono::steady_clock::time_point{} : now;
             lastClickRow_ = doubleClick ? -1 : row;
@@ -600,6 +766,7 @@ bool App::onMouse(const Event& event) {
         return true;
     }
 
+    // --- the terminal -----------------------------------------------------
     term::Session* session = active();
     if (!session) return true;
     focus_ = Focus::Terminal;
@@ -645,10 +812,20 @@ bool App::onEvent(const Event& event) {
         for (auto& session : tabs_) session->pump();
         return true;
     }
+    if (event == kControl) {
+        for (const auto& message : control_.take()) handleControl(message);
+        return true;
+    }
     if (event.is_mouse()) return onMouse(event);
 
     const std::string raw = event.input();
     const KeyChord chord = decodeKey(raw);
+
+    // The splash is in the way of everything and yields to anything.
+    if (boot_.running()) {
+        boot_.dismiss();
+        return true;
+    }
 
     // Overlays, in the order they sit on top of each other.
     if (onboard_.isOpen()) {
@@ -707,6 +884,11 @@ bool App::onEvent(const Event& event) {
     if (!chord.empty() && runBind(chord)) return true;
 
     if (focus_ == Focus::Browser) {
+        // A filter box takes everything while it is open.
+        if (browser_.filtering()) {
+            browser_.onFilterKey(chord, raw, config_.browser());
+            return true;
+        }
         if (chord.key == "tab") { focus_ = Focus::Terminal; return true; }
         if (browser_.onKey(chord, config_.browser())) return true;
         // Anything the browser does not want goes to the terminal, so typing
@@ -779,9 +961,11 @@ Element App::renderStatusBar(const Layout& layout) {
     // The path gets whatever the fixed pieces leave. Everything optional is
     // dropped as the window narrows, rather than every piece being squeezed
     // until none of them is readable.
-    const bool showLeaderHint = width >= 76;
-    const bool showBrowserStats = width >= 92 && status_.empty() && config_.issues().empty();
-    int reserved = 2;
+    // The reminders get a third of the bar at most, and the path gets the rest.
+    const int hintRoom = std::max(0, std::min(width / 2, width - 28));
+    Element hints = renderHints(hintRoom);
+    const bool showBrowserStats = width >= 96 && status_.empty() && config_.issues().empty();
+    int reserved = 2 + hintRoom;
     // Whatever sits on the right takes room from the path, not from the gap
     // between them.
     const std::size_t problems = config_.issues().size();
@@ -794,8 +978,6 @@ Element App::renderStatusBar(const Layout& layout) {
     } else if (!problemNote.empty()) {
         reserved += static_cast<int>(problemNote.size()) + 3;
     }
-    if (showLeaderHint) reserved += static_cast<int>(
-        config_.general().leader.describe().size()) + 8;
     if (showBrowserStats) reserved += static_cast<int>(browser_.statusLine().size()) + 2;
     if (session && !session->connection().empty()) {
         reserved += static_cast<int>(session->connection().size()) + 2;
@@ -852,12 +1034,38 @@ Element App::renderStatusBar(const Layout& layout) {
         left.push_back(text(browser_.statusLine() + "  ") | color(toFtx(theme_->muted)));
     }
 
-    if (showLeaderHint) {
-        left.push_back(text(config_.general().leader.describe() + " Space ") |
-                       color(toFtx(theme_->muted)));
-    }
+    left.push_back(std::move(hints));
 
     return hbox(std::move(left)) | bgcolor(toFtx(theme_->bg)) | size(WIDTH, EQUAL, width);
+}
+
+Element App::renderHints(int room) {
+    // What the keys actually are, read from the bind table rather than
+    // written out, so rebinding something changes the reminder too.
+    struct Hint { std::string keys; std::string what; };
+    const std::vector<Hint> all = {
+        {keyHintFor("command_palette"), "commands"},
+        {keyHintFor("help"), "keys"},
+        {keyHintFor("open_config"), "config"},
+        {keyHintFor("browser_filter"), "find"},
+        {keyHintFor("quit"), "quit"},
+    };
+
+    // Fit as many as there is room for, most useful first.
+    Elements parts;
+    int used = 0;
+    for (const auto& hint : all) {
+        if (hint.keys.empty()) continue;
+        const int cost = static_cast<int>(hint.keys.size() + hint.what.size()) + 4;
+        if (used + cost > room) break;
+        if (!parts.empty()) parts.push_back(text(" · ") | color(toFtx(theme_->border)));
+        parts.push_back(text(hint.keys + " ") | color(toFtx(theme_->accent)));
+        parts.push_back(text(hint.what) | color(toFtx(theme_->muted)));
+        used += cost;
+    }
+    if (parts.empty()) return text("");
+    parts.push_back(text(" "));
+    return hbox(std::move(parts));
 }
 
 Element App::renderSearch() {
@@ -995,8 +1203,15 @@ Element App::render() {
     if (layout.browserWidth == 0) {
         body = std::move(terminalPane);
     } else {
+        // Given room, the pane wears a mark, the way the old window did.
+        const bool wide = BrowserSettings::densityFor(layout.browserWidth) ==
+                          BrowserSettings::Density::Wide;
+        const std::string browserTitle =
+            (wide ? "◉ " : "") +
+            elidePath(paths::contractUser(browser_.path()), layout.browserWidth - (wide ? 8 : 6));
+
         Element browserPane =
-            panel(elidePath(paths::contractUser(browser_.path()), layout.browserWidth - 6),
+            panel(browserTitle,
                   browser_.render(*theme_, config_.browser(), focus_ == Focus::Browser,
                                   layout.browserRows, layout.browserWidth - 2),
                   focus_ == Focus::Browser, *theme_, decoration);
@@ -1033,6 +1248,10 @@ Element App::render() {
     else if (decoration.statusBar) screen.push_back(renderStatusBar(layout));
 
     Element root = vbox(std::move(screen)) | bgcolor(toFtx(theme_->bg));
+
+    if (boot_.running()) {
+        return boot_.render(*theme_, decoration, layout.width, layout.height);
+    }
 
     // Overlays. The interface behind them dims, so the eye lands on the thing
     // asking for attention.
@@ -1076,12 +1295,28 @@ int App::run() {
             say(error.substr(0, error.find('\n')), true);
         }
     }
+    std::string controlError;
+    if (!control_.start([this] { screen_.PostEvent(kControl); }, &controlError)) {
+        // Not fatal: without it, `apollo` inside Apollo simply says so.
+        controlError = "control socket: " + controlError;
+    }
+
     if (!newTab(connection)) return 1;
     if (connection) say("connecting to " + connection->describe() + "…");
+    else if (!controlError.empty()) say(controlError, true);
 
     if (options_.runSetup) onboard_.start();
     if (options_.openConfig) configView_.open();
     if (!options_.command.empty()) tabs_.front()->sendText(options_.command + "\r");
+
+    if (config_.decoration().boot) {
+        std::vector<Boot::Line> lines;
+        lines.push_back({"config", paths::contractUser(config_.path())});
+        lines.push_back({"opens", paths::contractUser(browser_.path())});
+        if (connection) lines.push_back({"ssh", connection->describe()});
+        else lines.push_back({"theme", config_.decoration().theme});
+        boot_.start(std::move(lines), config_.decoration().animate);
+    }
 
     // Ctrl-C and Ctrl-Z belong to whatever is running in the terminal, not to
     // Apollo; without this FTXUI would raise the signals itself.
@@ -1103,6 +1338,7 @@ int App::run() {
 
     ticking_ = false;
     if (ticker_.joinable()) ticker_.join();
+    control_.stop();
 
     for (auto& session : tabs_) {
         if (!session->connection().empty()) {

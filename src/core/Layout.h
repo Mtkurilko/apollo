@@ -47,7 +47,16 @@ struct Panes {
 // steps aside on its own rather than squeezing both into uselessness.
 constexpr int kUsableCols = 24;
 constexpr int kUsableRows = 6;
+// A browser narrower than this shows almost nothing but truncation, so rather
+// than shrink past it the browser gives up its place. Someone who has asked
+// for a narrower one than this gets what they asked for.
+constexpr int kUsableBrowserCols = 22;
 
 Panes compute(const Request& request);
+
+// The widest the browser may be: whatever leaves the terminal usable. The
+// divider drag clamps to this too, so dragging never records a width the
+// layout will then refuse to draw.
+int maxBrowserWidth(const Request& request);
 
 } // namespace apollo::layout

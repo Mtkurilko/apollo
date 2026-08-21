@@ -445,8 +445,11 @@ Element ConfigView::renderSettings(Page page, const Theme& theme, int width, int
                     color(current.empty() ? toFtx(theme.muted) : toFtx(theme.fg)),
             });
         } else {
-            value = text(current.empty() ? "(unset)" : current) |
-                    color(current.empty() ? toFtx(theme.muted) : toFtx(theme.fg));
+            // Elided, or a long path squeezes the label into initials and
+            // shoves the "changed" marker off the end.
+            const std::string shown =
+                current.empty() ? "(unset)" : elide(current, std::max(8, width - labelWidth - 10));
+            value = text(shown) | color(current.empty() ? toFtx(theme.muted) : toFtx(theme.fg));
         }
 
         Elements cells{

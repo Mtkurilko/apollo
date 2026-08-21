@@ -12,7 +12,9 @@
 
 #include "core/Commands.h"
 #include "core/Config.h"
+#include "core/Control.h"
 #include "term/Session.h"
+#include "ui/Boot.h"
 #include "ui/BrowserView.h"
 #include "ui/ConfigView.h"
 #include "ui/Onboard.h"
@@ -62,6 +64,11 @@ private:
     // --- events -----------------------------------------------------------
     bool onEvent(const ftxui::Event& event);
     bool onMouse(const ftxui::Event& event);
+    // A message from `apollo ...` typed in one of Apollo's own terminals.
+    void handleControl(const std::string& message);
+    // The first column of the grab zone between the panes, or -1 when the
+    // panes are not side by side.
+    int dividerColumn(const Layout& layout) const;
     bool runBind(const KeyChord& chord);
     void act(const std::string& action, const std::vector<std::string>& args);
     void runCommand(const Command& command);
@@ -76,6 +83,7 @@ private:
     std::vector<int> tabEdges() const;
     ftxui::Element renderHelp(int width, int height);
     ftxui::Element renderSearch();
+    ftxui::Element renderHints(int room);
 
     void say(const std::string& message, bool isError = false);
     void copyToClipboard(const std::string& text);
@@ -98,6 +106,19 @@ private:
     Palette palette_;
     ConfigView configView_;
     Onboard onboard_;
+    Boot boot_;
+    ControlServer control_;
+
+    // While the divider is being dragged the width is held here rather than
+    // written to the config on every mouse event; it is saved on release.
+    int dragWidth_ = -1;
+    bool draggingDivider_ = false;
+
+    // Where Apollo has just told the shell to go. Until the shell says it has
+    // arrived, its reports are stale and following them would drag the browser
+    // back to where it came from.
+    std::filesystem::path pendingCwd_;
+    std::chrono::steady_clock::time_point pendingCwdUntil_{};
 
     // The pane arrangement lives in the config and nowhere else, so a key that
     // changes it and the file that describes it can never disagree.
