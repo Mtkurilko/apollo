@@ -11,8 +11,6 @@ using namespace apollo::term;
 
 namespace {
 
-// Everything needed to decide how one cell should look, resolved once so the
-// run-grouping below can compare two cells cheaply.
 struct Style {
     Color fg;
     Color bg;
@@ -34,8 +32,6 @@ Element decorate(Element element, const Style& style) {
     return element;
 }
 
-// Column ranges of `needle` inside one line's text. Used to light up search
-// matches without disturbing anything else about the line.
 std::vector<std::pair<int, int>> matchRanges(const std::string& haystack,
                                              const std::string& needle) {
     std::vector<std::pair<int, int>> ranges;
@@ -51,9 +47,6 @@ std::vector<std::pair<int, int>> matchRanges(const std::string& haystack,
     return ranges;
 }
 
-// The host terminal's own cursor, placed on the cell the program thinks it is
-// on. Using the real one rather than painting a block means it blinks the way
-// the user's terminal blinks and takes the shape they asked for.
 Element withCursor(Element cell, const std::string& shape, bool blink) {
     if (shape == "bar") return blink ? focusCursorBarBlinking(std::move(cell))
                                      : focusCursorBar(std::move(cell));
@@ -72,8 +65,6 @@ Element renderTerminal(const Session& session,
     const int rows = std::min(options.height, screen.rows());
     if (rows <= 0) return text("");
 
-    // Which slice of the transcript is on screen. Scrolling back moves the
-    // window up through history without touching the grid itself.
     const int bottom = screen.totalLines() - session.scrollOffset();
     const int top = bottom - rows;
 
@@ -83,8 +74,6 @@ Element renderTerminal(const Session& session,
         session.selection.normalised(selFromLine, selFromCol, selToLine, selToCol);
     }
 
-    // The real cursor goes to the focused pane. An unfocused pane still shows
-    // where it is, as a dimmed block, the way every terminal multiplexer does.
     const bool liveCursor = options.focused && screen.cursorVisible() &&
                             session.scrollOffset() == 0;
     const bool ghostCursor = !options.focused && screen.cursorVisible() &&
@@ -131,7 +120,6 @@ Element renderTerminal(const Session& session,
             style.fg = resolve(cell.attr.fg, theme, true);
             style.bg = resolve(cell.attr.bg, theme, false);
 
-            // Reverse video and a reversed cell cancel each other out.
             const bool reversed =
                 ((cell.attr.flags & FlagReverse) != 0) != screen.reverseVideo;
             if (reversed) std::swap(style.fg, style.bg);
@@ -153,8 +141,7 @@ Element renderTerminal(const Session& session,
             const bool onCursor = absolute == cursorLine && x == screen.cursorX();
             if (onCursor && ghostCursor) std::swap(style.fg, style.bg);
 
-            // The cursor is always its own run: it is one cell that has to be
-            // addressable, and merging it into a neighbour would lose it.
+            // The cursor is its own run; merging it into a neighbour would lose it.
             const bool isCursor = onCursor && (liveCursor || ghostCursor);
             if (!started || !(style == current) || isCursor) {
                 flush();

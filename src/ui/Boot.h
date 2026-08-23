@@ -1,9 +1,4 @@
-// The splash on the way in.
-//
-// It is deliberately brief and never blocking: the shell is already starting
-// underneath it, any key dismisses it, and `decoration.boot = false` removes it
-// altogether. A boot screen that made you wait would be a boot screen that
-// wore out its welcome on the second day.
+// Splash screen. Skippable, and never delays the shell starting.
 #pragma once
 
 #include <chrono>
@@ -23,8 +18,6 @@ public:
         std::string value;
     };
 
-    // `lines` are the few facts shown under the mark: where the config is,
-    // which workspace, what it connected to.
     void start(std::vector<Line> lines, bool animate);
     void dismiss() { running_ = false; }
     bool running() const;
@@ -32,9 +25,7 @@ public:
     ftxui::Element render(const Theme& theme, const DecorationSettings& decoration,
                           int width, int height) const;
 
-    // The word, in block letters, as one string per row. Public so the tests
-    // can check every row is the same width — a ragged row would tear the
-    // reveal in half.
+    // The word, in block letters, as one string per row.
     static const std::vector<std::string>& mark();
     static int markWidth();
 

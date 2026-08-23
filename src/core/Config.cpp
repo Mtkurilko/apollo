@@ -185,9 +185,6 @@ std::string Config::valueOf(const Setting& s) const {
 
 const std::vector<Bind>& Config::defaultBinds() {
     static const std::vector<Bind> binds = [] {
-        // Apollo claims almost nothing on its own. Everything below the first
-        // group hides behind the leader key, so Ctrl-A, Ctrl-C, Ctrl-K, Ctrl-R
-        // and the rest still belong to whatever is running in the terminal.
         const std::vector<std::pair<std::string, std::vector<std::string>>> table = {
             {", F1",              {"help"}},
             {", F10",             {"quit"}},
@@ -242,13 +239,12 @@ const std::vector<Bind>& Config::defaultBinds() {
 std::string Config::defaultText() {
     return R"(# Apollo
 #
-# This file is yours. Everything Apollo can be told is here, it is read live —
-# save and the running Apollo restyles itself — and `apollo config` edits it in
-# place without disturbing your comments.
+# Read live: save and the running Apollo picks it up. `apollo config` edits
+# this file in place and leaves the comments alone.
 #
-# Run `apollo config` on its own for an editor with every setting explained.
+# Run `apollo config` with no arguments for an editor with every setting.
 
-# Variables can be defined once and used anywhere below.
+# Variables, defined once and used anywhere below.
 $accent = #7aa2f7
 
 general {
@@ -296,9 +292,9 @@ browser {
 #
 #   bind = <modifiers>, <key>, <action>, <argument>
 #
-# LEADER means "after the leader key", which is Ctrl+Space unless you change
-# it. Apollo hides its own keys behind the leader on purpose: Ctrl-A, Ctrl-C,
-# Ctrl-K and the rest stay with the program running in your terminal.
+# LEADER means "after the leader key", Ctrl+Space unless you change it.
+# Apollo's keys sit behind the leader so Ctrl-A, Ctrl-C, Ctrl-K and the rest
+# stay with the program running in your terminal.
 #
 # `apollo config` lists every action, and `unbind` removes one of the defaults.
 # ---------------------------------------------------------------------------
@@ -313,9 +309,9 @@ leader = CTRL, SPACE
 #
 #   command = <name>, <what to run>, "<description>"
 #
-# Anything you add becomes `apollo <name>`, appears in the command palette, and
-# can be bound to a key. Executables dropped into ~/.apollo/commands are picked
-# up the same way, with no entry needed here.
+# Anything here becomes `apollo <name>`, appears in the palette, and can be
+# bound to a key. Executables in ~/.apollo/commands work the same way with no
+# entry needed.
 # ---------------------------------------------------------------------------
 
 # command = deploy, ./scripts/deploy.sh, "Ship the current branch"
@@ -473,8 +469,6 @@ void Config::derive() {
     browser_.toolbar = yes("browser.toolbar", true);
     browser_.details = yes("browser.details", true);
 
-    // Anything set in a known section that the schema does not know about is
-    // almost always a typo, and silently ignoring it is how config files rot.
     for (const auto& section : file_.root().children) {
         static const std::vector<std::string> checked = {"general", "decoration", "terminal",
                                                          "browser", "colors"};
@@ -556,8 +550,6 @@ std::optional<Theme> Config::loadThemeFile(const std::string& name) {
         for (const auto& d : source.diagnostics()) note(d.format());
     }
 
-    // A theme file says which built-in it starts from and then overrides
-    // whichever colours it cares about, so a two line file is a valid theme.
     const std::string base = source.get("base", "apollo");
     Theme theme = Theme::builtin(base).value_or(*Theme::builtin("apollo"));
     if (!Theme::builtin(base)) {
@@ -617,8 +609,7 @@ void Config::deriveTheme() {
                 note("colors." + entry.key + ": not a colour Apollo knows (" + entry.value + ")");
             }
         }
-        // Chrome colours changed, so the terminal ramp derived from them has to
-        // be rebuilt or the two palettes drift apart.
+        // Colours changed, so rebuild the ansi ramp derived from them.
         theme_.rebuildRamp();
     }
 }
@@ -651,8 +642,6 @@ void Config::deriveBinds() {
         bind.args.assign(parts.begin() + 3, parts.end());
         bind.line = entry->line;
 
-        // A user bind replaces the default on the same chord rather than
-        // stacking with it.
         const auto same = std::find_if(binds_.begin(), binds_.end(), [&](const Bind& b) {
             return b.chord == bind.chord;
         });
@@ -748,8 +737,7 @@ bool Config::addConnection(const Connection& conn, std::string* error) {
         if (error) *error = "A connection needs a name.";
         return false;
     }
-    // The name becomes part of a config path, so it must not contain a dot or
-    // whitespace.
+    // The name becomes part of a config path, so it must not contain a dot or whitespace.
     for (const char c : conn.name) {
         if (!std::isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_') {
             if (error) *error = "Connection names use letters, digits, - and _ only.";
@@ -775,8 +763,6 @@ bool Config::addConnection(const Connection& conn, std::string* error) {
     if (!conn.jump.empty()) file_.set(base + "jump", conn.jump);
 
     derive();
-    // The first destination becomes the default, so `apollo connect` works
-    // with no argument from the moment it is added.
     if (connections_.size() == 1) setDefaultConnection(conn.name);
     return true;
 }
@@ -828,8 +814,7 @@ bool Config::removeBind(const std::string& spec) {
     const auto chord = KeyChord::parse(parts[0], parts[1]);
     if (!chord) return false;
 
-    // Drop the user's own line if there is one; otherwise record an `unbind`
-    // so the default stops applying.
+    // Drop the user's own line if there is one, else record an `unbind`.
     bool removed = false;
     for (const auto* entry : file_.root().entriesNamed("bind")) {
         const auto existing = ConfigFile::split(entry->value);
@@ -901,8 +886,7 @@ std::optional<std::string> migrateLegacyConfig(const fs::path& properties) {
     }
     out << "}\n";
 
-    // 0.2 stored connections as connection.<name>.<field>; 0.1 as a flat
-    // ssh.<field> block, which becomes the connection named "default".
+    // 0.2 used connection.<name>.<field>; 0.1 a flat ssh.<field> block.
     std::map<std::string, std::map<std::string, std::string>> hosts;
     for (const auto& [key, value] : values) {
         if (key.rfind("connection.", 0) == 0) {

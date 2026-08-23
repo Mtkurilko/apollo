@@ -1,8 +1,4 @@
 // Draws a terminal session.
-//
-// The grid is turned into FTXUI elements one run of identical attributes at a
-// time, so a screen full of plain text costs a handful of elements per line
-// rather than one per cell.
 #pragma once
 
 #include <string>
@@ -26,8 +22,6 @@ ftxui::Element renderTerminal(const term::Session& session,
                               const TerminalSettings& settings,
                               const TerminalViewOptions& options);
 
-// The line along the bottom of the terminal pane: where the scrollback is
-// parked, and what the session is attached to.
 ftxui::Element renderTerminalStatus(const term::Session& session,
                                     const Theme& theme,
                                     int width);

@@ -20,7 +20,6 @@ std::string trim(const std::string& text) {
     return text.substr(begin, text.find_last_not_of(" \t") - begin + 1);
 }
 
-// Spellings people actually type, mapped onto Apollo's internal names.
 const std::map<std::string, std::string>& keyAliases() {
     static const std::map<std::string, std::string> table = {
         {"return", "enter"},   {"cr", "enter"},        {"ret", "enter"},
@@ -29,8 +28,7 @@ const std::map<std::string, std::string>& keyAliases() {
         {"prior", "pageup"},   {"next", "pagedown"},   {"spc", "space"},
         {"ins", "insert"},     {"arrowleft", "left"},  {"arrowright", "right"},
         {"arrowup", "up"},     {"arrowdown", "down"},  {"tab", "tab"},
-        // Punctuation has to be spelled out: a bind line is comma-separated,
-        // so `bind = LEADER, ,, open_config` could never work.
+        // Bind lines are comma-separated, so `bind = LEADER, ,, x` could never work.
         {"comma", ","},        {"period", "."},        {"dot", "."},
         {"slash", "/"},        {"backslash", "\\"},    {"minus", "-"},
         {"dash", "-"},         {"equal", "="},         {"plus", "+"},
@@ -246,8 +244,6 @@ KeyChord decodeKey(const std::string& bytes) {
     const unsigned char first = static_cast<unsigned char>(bytes[0]);
 
     if (bytes.size() == 1) {
-        // NUL is what a terminal sends for Ctrl+Space, which is Apollo's
-        // default leader. Without this it would decode as Ctrl+` instead.
         if (first == 0)   { chord.mods = ModCtrl; chord.key = "space"; return chord; }
         if (first == 9)   { chord.key = "tab"; return chord; }
         if (first == 13 || first == 10) { chord.key = "enter"; return chord; }
@@ -270,12 +266,10 @@ KeyChord decodeKey(const std::string& bytes) {
     }
 
     if (first != 27) {
-        // A multi-byte UTF-8 character. Chords are only ever ASCII, so this is
-        // text for the pty rather than something to match.
+        // A multi-byte UTF-8 character.
         return chord;
     }
 
-    // ESC O <final>: the "application cursor" encoding of arrows and F1-F4.
     if (bytes.size() == 3 && bytes[1] == 'O') {
         chord.key = finalKeyName(bytes[2]);
         return chord;
@@ -298,7 +292,6 @@ KeyChord decodeKey(const std::string& bytes) {
         return chord;
     }
 
-    // ESC <char>: Alt held down.
     if (bytes.size() == 2) {
         const KeyChord inner = decodeKey(bytes.substr(1));
         if (inner.empty()) return chord;

@@ -47,7 +47,6 @@ bool Session::start(const Options& options, std::string* error) {
     launch.cwd = options.cwd;
     launch.env = options.env;
 
-    // What every child needs to know about the terminal it is talking to.
     launch.env.push_back("TERM=xterm-256color");
     launch.env.push_back("COLORTERM=truecolor");
     launch.env.push_back("TERM_PROGRAM=Apollo");
@@ -68,8 +67,7 @@ void Session::close() {
 
 void Session::startReader() {
     readerStop_ = false;
-    // The thread never touches the screen: it waits for readability and calls
-    // the wake-up, and the UI thread does the reading.
+    // The thread never touches the screen; it only signals that bytes are ready.
     reader_ = std::thread([this] {
         while (!readerStop_) {
             pollfd waiting{pty_.fd(), POLLIN, 0};
@@ -100,8 +98,7 @@ bool Session::pump() {
     char buffer[65536];
     const int historyBefore = screen_.historyLines();
 
-    // Bounded so one very chatty program (`yes`, a big `cat`) cannot starve the
-    // rest of the frame. Anything left over is picked up next time round.
+    // Bounded so `yes` or a big `cat` cannot starve the rest of the frame.
     for (int round = 0; round < 32; ++round) {
         const std::ptrdiff_t got = pty_.read(buffer, sizeof(buffer));
         if (got > 0) {
@@ -117,9 +114,6 @@ bool Session::pump() {
         pty_.write(replies);
     }
     if (changed && scrollOffset_ > 0) {
-        // Keep the view on the same text while new output arrives. Without
-        // adding back the lines that moved into history, whatever you had
-        // scrolled to would slide off the top as the program kept printing.
         const int pushed = screen_.historyLines() - historyBefore;
         scrollOffset_ = std::clamp(scrollOffset_ + pushed, 0, screen_.historyLines());
     }
@@ -143,8 +137,6 @@ void Session::sendText(const std::string& text) {
 void Session::sendKey(const KeyChord& chord, const std::string& raw) {
     scrollToBottom();
 
-    // In application cursor mode the arrows and Home/End change their encoding.
-    // Everything else goes through byte for byte.
     if (screen_.applicationCursor && chord.mods == ModNone) {
         static const std::pair<const char*, char> map[] = {
             {"up", 'A'}, {"down", 'B'}, {"right", 'C'}, {"left", 'D'},
@@ -165,16 +157,14 @@ void Session::paste(const std::string& text) {
     if (text.empty()) return;
     scrollToBottom();
 
-    // Bracketed paste tells the far side this is pasted text rather than
-    // typing, which is what stops an editor auto-indenting every line of it.
+    // Bracketed paste stops editors auto-indenting every pasted line.
     if (screen_.bracketedPaste) {
         pty_.write("\x1B[200~");
         pty_.write(text);
         pty_.write("\x1B[201~");
         return;
     }
-    // Without it, a newline would submit each line; carriage returns are what
-    // a real keyboard sends.
+    // Without it a newline submits each line; a keyboard sends carriage returns.
     std::string safe = text;
     std::replace(safe.begin(), safe.end(), '\n', '\r');
     pty_.write(safe);
@@ -218,7 +208,6 @@ void Session::scrollToBottom() { scrollOffset_ = 0; }
 void Session::scrollToTop() { scrollOffset_ = screen_.historyLines(); }
 
 void Session::scrollToLine(int absolute) {
-    // Put the requested line at the top of the view.
     const int bottom = screen_.totalLines();
     const int wanted = std::clamp(absolute, 0, std::max(0, bottom - 1));
     scrollOffset_ = std::clamp(bottom - screen_.rows() - wanted, 0, screen_.historyLines());
@@ -272,8 +261,6 @@ std::string Session::textInRange(int fromLine, int fromCol, int toLine, int toCo
         while (!piece.empty() && piece.back() == ' ') piece.pop_back();
         out += piece;
 
-        // A wrapped line was one line when it was typed, so paste it back as
-        // one line rather than breaking it where the window happened to end.
         if (line < toLine && !row.wrapped) out.push_back('\n');
     }
     return out;

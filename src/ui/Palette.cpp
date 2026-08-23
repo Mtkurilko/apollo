@@ -63,8 +63,6 @@ bool Palette::onKey(const KeyChord& chord, const std::string& raw) {
     }
     if (chord.key == "enter") {
         if (selected_ >= 0 && selected_ < static_cast<int>(shown_.size())) {
-            // Copy the action before closing: close() drops the items, and the
-            // action itself may well reopen the palette.
             auto action = items_[shown_[static_cast<std::size_t>(selected_)].index].run;
             close();
             if (action) action();
@@ -98,8 +96,7 @@ bool Palette::onKey(const KeyChord& chord, const std::string& raw) {
         if (query_.text != before) { selected_ = 0; refilter(); }
         return true;
     }
-    // Swallow everything else: an open palette must never leak a keystroke
-    // into the terminal underneath it.
+    // An open palette must not leak keystrokes into the terminal underneath.
     return true;
 }
 

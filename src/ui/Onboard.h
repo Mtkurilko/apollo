@@ -1,8 +1,4 @@
 // First run.
-//
-// Six screens, none of them required beyond the first two, and every answer is
-// something `apollo config` can change afterwards. The point is to leave a
-// working, commented config behind rather than an empty one.
 #pragma once
 
 #include <functional>
@@ -26,10 +22,7 @@ public:
     ftxui::Element render(const Theme& theme, const DecorationSettings& decoration,
                           int width, int height);
 
-    // The theme highlighted right now, so the whole interface can preview it
-    // while the user is choosing.
     const std::string& previewTheme() const { return previewTheme_; }
-    // Called when the wizard writes the config, and again when it finishes.
     std::function<void()> onChanged;
     std::function<void()> onFinished;
 
@@ -49,7 +42,6 @@ private:
     int themeIndex_ = 0;
     std::string previewTheme_;
 
-    // Connection, all optional.
     int connectionField_ = 0;
     LineEdit connectionName_;
     LineEdit connectionAddress_;

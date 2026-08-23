@@ -1,9 +1,5 @@
-// The terminal's grid: what is on screen, what has scrolled off, and every
-// mode a program can put the terminal into.
-//
-// Nothing here knows about escape sequences (that is VtParser's job) or about
-// drawing (that is the UI's). It is the shared model both sides agree on, which
-// also makes it straightforward to test.
+// The terminal grid: what is on screen, what has scrolled off, and the modes
+// a program can set. Knows nothing about escape sequences or drawing.
 #pragma once
 
 #include <cstdint>
@@ -13,8 +9,6 @@
 
 namespace apollo::term {
 
-// Colours are packed into a word so a cell stays small: 10 000 lines of
-// scrollback is a lot of cells.
 using ColorRef = std::uint32_t;
 
 constexpr ColorRef kColorDefault = 0;
@@ -66,9 +60,6 @@ struct Cell {
 
 struct Row {
     std::vector<Cell> cells;
-    // True when the line ran off the right edge and continues on the next one.
-    // Reflowing on resize depends on this, as does copying a wrapped command
-    // out of the scrollback in one piece.
     bool wrapped = false;
     // Set by OSC 133, so Apollo can jump between commands.
     bool promptStart = false;
@@ -92,7 +83,6 @@ public:
     const Row& row(int y) const;
     int historyLines() const { return static_cast<int>(history_.size()); }
     int totalLines() const { return historyLines() + rows_; }
-    // Addresses history and screen as one run of lines, oldest first.
     const Row& lineAt(int absolute) const;
     // Absolute line numbers carrying an OSC 133 prompt mark, oldest first.
     std::vector<int> promptLines() const;
@@ -207,7 +197,6 @@ private:
     std::uint64_t revision_ = 1;
 };
 
-// Display width of a code point: 0 for combining marks, 2 for wide glyphs.
 int charWidth(char32_t cp);
 
 // One code point as UTF-8.

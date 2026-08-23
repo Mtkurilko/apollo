@@ -22,8 +22,7 @@ void line(const std::string& left, const std::string& right) {
     std::cout << "  " << std::left << std::setw(28) << left << right << "\n";
 }
 
-// Passwords are masked wherever a config value is printed, whatever the key is
-// called, so a new secret-shaped setting cannot leak by being forgotten here.
+// Mask on the key's suffix, not a list, so a new secret setting cannot be forgotten.
 bool isSecret(const std::string& path) {
     return path.size() >= 8 && path.compare(path.size() - 8, 8, "password") == 0;
 }
@@ -122,8 +121,6 @@ int listConnections(const Config& config) {
 
 int runConfig(std::vector<std::string> args, Config& config, Outcome& outcome) {
     if (args.empty()) {
-        // No subcommand: the interactive editor, which is what most people
-        // want and what `apollo config` on its own should do.
         outcome.launch = true;
         outcome.options.openConfig = true;
         return 0;
@@ -194,9 +191,6 @@ int runConfig(std::vector<std::string> args, Config& config, Outcome& outcome) {
         if (!config.save(&error)) { std::cerr << error << "\n"; return 1; }
         std::cout << args[0] << " = " << maskIfSecret(args[0], value) << "\n";
 
-        // A few settings accept more than the schema can list — a theme can be
-        // a file. Those are checked after the fact, and saying so here beats
-        // letting the user find out when the colours do not change.
         for (const auto& issue : config.issues()) {
             if (issue.find(value) != std::string::npos) std::cerr << "  warning: " << issue << "\n";
         }
@@ -206,7 +200,6 @@ int runConfig(std::vector<std::string> args, Config& config, Outcome& outcome) {
     if (sub == "unset") {
         if (!need(1, "unset <key>")) return 1;
         if (!config.unset(args[0])) {
-            // It may well be set — just not in the file we are allowed to edit.
             if (config.file().get(args[0])) {
                 std::cerr << args[0] << " comes from a file brought in with `source`.\n"
                           << "Edit that file, or override it here:\n"
@@ -231,8 +224,6 @@ int runConfig(std::vector<std::string> args, Config& config, Outcome& outcome) {
             std::cerr << "Set $EDITOR, or `apollo config set general.editor <path>`.\n";
             return 1;
         }
-        // Hand the terminal over: this is the user's editor, not a subprocess
-        // whose output we want to capture.
         std::vector<char*> argv = {const_cast<char*>(editor.c_str()),
                                    const_cast<char*>(config.path().c_str()), nullptr};
         ::execvp(argv[0], argv.data());
@@ -342,8 +333,6 @@ int listCommands(const Config& config) {
 
     for (const auto& command : registry.all()) {
         std::string summary = command.summary;
-        // Plain "..." keeps the byte count equal to the column count, so the
-        // origins below still line up.
         if (summary.size() > 40) summary = summary.substr(0, 37) + "...";
         std::cout << "  " << std::left << std::setw(16) << command.name << std::setw(42)
                   << summary << command.origin << "\n";
@@ -351,14 +340,9 @@ int listCommands(const Config& config) {
     return 0;
 }
 
-// --- talking to the Apollo we are already inside ---------------------------
-//
-// Without this, `apollo` typed in Apollo's own terminal starts a second Apollo
-// nested in the first. What it should do is act on the one already there.
+// --- talking to the Apollo we are already inside --------------------------- Without this,
+// `apollo` typed in Apollo's own terminal starts a second Apollo nested in the first.
 
-// The message for these arguments, or empty when the command is one that
-// belongs here — `apollo doctor` prints to this terminal and should not be
-// handed to the window around it.
 std::string controlMessageFor(const std::vector<std::string>& args) {
     if (args.empty()) return "home";
 
@@ -371,8 +355,6 @@ std::string controlMessageFor(const std::vector<std::string>& args) {
     if (first == "reload") return "reload";
     if (first == "new-tab" || first == "tab") return "new-tab";
     if (first == "connect") return rest.empty() ? "connect" : "connect " + rest;
-    // Only the bare `apollo config`, which opens the editor. The subcommands
-    // print to this terminal and stay here.
     if (first == "config" && args.size() == 1) return "config";
     if (first == "help" && args.size() == 1) return "help";
 
@@ -384,11 +366,6 @@ std::string controlMessageFor(const std::vector<std::string>& args) {
     return "";
 }
 
-// --- completion ------------------------------------------------------------
-//
-// The shell asks Apollo what could come next rather than carrying a copy of the
-// answer, so completion cannot fall behind the schema, the themes on disk or
-// the destinations in the config.
 
 std::vector<std::string> completionsFor(const std::vector<std::string>& words,
                                         const Config& config) {
@@ -406,7 +383,6 @@ std::vector<std::string> completionsFor(const std::vector<std::string>& words,
         return names;
     };
 
-    // words[0] is "apollo"; the word being completed is the last one.
     const std::size_t at = words.size();
 
     if (at <= 2) {
@@ -467,8 +443,7 @@ std::vector<std::string> completionsFor(const std::vector<std::string>& words,
 }
 
 int printCompletionScript(const std::string& shell) {
-    // Custom raw-string delimiters: both scripts contain `)"`, which would end
-    // an ordinary R"(...)" early and truncate them.
+    // Both scripts contain `)" `, which would end an ordinary raw string early.
     if (shell == "zsh") {
         std::cout << R"APOLLO(#compdef apollo
 # Apollo completion for zsh. Install with:
@@ -530,7 +505,6 @@ bool bootstrap(Config& config, std::string* note) {
     std::error_code ec;
     if (fs::exists(paths::configFile(), ec)) return false;
 
-    // A pre-0.3 install, before the config became a real language.
     const fs::path legacy = paths::legacyPropertiesFile();
     if (fs::exists(legacy, ec)) {
         if (const auto converted = migrateLegacyConfig(legacy)) {
@@ -563,13 +537,9 @@ bool bootstrap(Config& config, std::string* note) {
 Outcome dispatch(const std::vector<std::string>& args, Config& config) {
     Outcome outcome;
 
-    // Inside one of Apollo's own terminals, hand the command to the Apollo
-    // around us rather than starting another one inside it.
     if (const std::string socket = control::socketFromEnvironment(); !socket.empty()) {
         if (const std::string message = controlMessageFor(args); !message.empty()) {
             if (control::send(socket, message)) return outcome;
-            // A socket file left behind by an instance that is gone: fall
-            // through and behave as though nothing was listening.
         }
     } else if (!args.empty() && (args[0] == "quit" || args[0] == "exit")) {
         std::cerr << "Apollo is not running in this terminal.\n";
@@ -602,8 +572,6 @@ Outcome dispatch(const std::vector<std::string>& args, Config& config) {
         return outcome;
     }
     if (first == "__complete") {
-        // Called by the shell, one candidate per line. Never fails loudly:
-        // a broken completion should be silent, not noisy on every Tab.
         for (const auto& candidate : completionsFor(rest, config)) {
             std::cout << candidate << "\n";
         }
@@ -641,7 +609,6 @@ Outcome dispatch(const std::vector<std::string>& args, Config& config) {
         return outcome;
     }
 
-    // A directory: open Apollo there.
     std::error_code ec;
     if (fs::is_directory(paths::expandUser(first), ec)) {
         outcome.launch = true;
@@ -649,8 +616,6 @@ Outcome dispatch(const std::vector<std::string>& args, Config& config) {
         return outcome;
     }
 
-    // Anything else is a command the user added, either in the config or as an
-    // executable in ~/.apollo/commands.
     CommandRegistry registry;
     for (const auto& declared : config.commands()) {
         registry.addDeclared(declared.name, declared.exec, declared.summary, "apollo.conf");
@@ -660,8 +625,6 @@ Outcome dispatch(const std::vector<std::string>& args, Config& config) {
     if (const Command* command = registry.find(first)) {
         std::string line = command->exec;
         for (const auto& argument : rest) line += " " + argument;
-        // Run it here, connected to this terminal, so it behaves exactly as if
-        // the user had typed the command themselves.
         std::vector<char*> argv = {const_cast<char*>("/bin/sh"), const_cast<char*>("-c"),
                                    const_cast<char*>(line.c_str()), nullptr};
         ::execv("/bin/sh", argv.data());

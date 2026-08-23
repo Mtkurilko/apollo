@@ -1,9 +1,4 @@
-// The command palette.
-//
-// One list, fuzzy filtered, over everything Apollo can do: built-in commands,
-// commands from the config, executables in ~/.apollo/commands, actions, themes
-// and SSH destinations. It is the answer to "what can this thing do" for anyone
-// who has not read the config file.
+// The command palette: everything Apollo can do, fuzzy filtered.
 #pragma once
 
 #include <functional>
@@ -31,7 +26,6 @@ public:
     void close();
     bool isOpen() const { return open_; }
 
-    // Returns true when the palette consumed the key.
     bool onKey(const KeyChord& chord, const std::string& raw);
 
     ftxui::Element render(const Theme& theme,

@@ -16,9 +16,6 @@ using namespace ftxui;
 
 namespace {
 
-// The snippet that makes the browser follow the shell and lets Apollo jump
-// between commands. It is plain OSC 7 and OSC 133, which every modern terminal
-// understands, so nothing here is Apollo-specific.
 const char* kShellIntegration = R"(# Apollo shell integration.
 # Reports the working directory (OSC 7) and marks prompts (OSC 133) so Apollo's
 # file browser follows along and Leader+Up/Down can jump between commands.
@@ -154,8 +151,6 @@ bool Onboard::writeShellIntegration(std::string& where) {
         return true;
     }
 
-    // Don't add the line twice if the wizard is run again. Match on the real
-    // path, not a guess at it: the config directory is overridable.
     const std::string marker = script.string();
     {
         std::ifstream existing(rc);
@@ -186,7 +181,6 @@ bool Onboard::onKey(const KeyChord& chord, const std::string& raw) {
     if (!open_) return false;
 
     if (chord.key == "escape") {
-        // Skipping the wizard still leaves a usable config behind.
         std::string problem;
         config_.save(&problem);
         finish();
@@ -250,7 +244,6 @@ bool Onboard::onKey(const KeyChord& chord, const std::string& raw) {
             LineEdit* field = connectionField_ == 1   ? &connectionName_
                               : connectionField_ == 2 ? &connectionAddress_
                                                       : &connectionKey_;
-            // Typing into a field is as clear an answer as pressing y.
             if (field->onKey(chord, raw)) wantsConnection_ = true;
             return true;
         }
@@ -292,7 +285,6 @@ Element Onboard::render(const Theme& theme, const DecorationSettings& decoration
             edit.render(theme, placeholder, focused),
         });
     };
-    // One of a pair of choices, the picked one filled in.
     const auto choiceChip = [&](const std::string& label, bool picked) {
         Element chip = text(label);
         if (picked) chip = std::move(chip) | bgcolor(toFtx(theme.accent)) | color(toFtx(theme.bg));

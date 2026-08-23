@@ -1,11 +1,8 @@
-// One terminal: a pty, a parser and a screen, plus the view state that belongs
-// to looking at it (where the scrollback is parked, what is selected).
+// One terminal: pty, parser, screen, and the state of looking at it.
 //
-// Reading is deliberately split in two. A small thread waits on the pty and
-// does nothing but signal that bytes are ready; the bytes themselves are read
-// and parsed on the UI thread inside pump(). The screen therefore has exactly
-// one writer and needs no locking, and a keystroke still turns into a frame
-// without waiting for a timer to come round.
+// A reader thread only signals that bytes are ready; the reading and parsing
+// happen on the UI thread in pump(), so the screen has one writer and needs
+// no locking.
 #pragma once
 
 #include <atomic>
@@ -50,7 +47,6 @@ public:
 
     bool start(const Options& options, std::string* error = nullptr);
     void resize(int rows, int cols);
-    // Drains the pty and updates the screen. True when anything changed.
     bool pump();
     void close();
 
@@ -65,10 +61,8 @@ public:
     Screen& screen() { return screen_; }
     const Screen& screen() const { return screen_; }
 
-    // --- input ------------------------------------------------------------
-    // `raw` is exactly what the terminal sent us. Forwarding it unchanged is
-    // what makes odd keys and unusual terminals work; only the few sequences
-    // that depend on a mode Apollo tracks get rewritten.
+    // --- input ------------------------------------------------------------ `raw` is
+    // exactly what the terminal sent us.
     void sendKey(const KeyChord& chord, const std::string& raw);
     void sendText(const std::string& text);
     void paste(const std::string& text);
@@ -82,7 +76,6 @@ public:
     void scrollToBottom();
     void scrollToTop();
     void scrollToLine(int absolute);
-    // direction -1 goes back through the transcript, +1 forward.
     bool jumpPrompt(int direction);
 
     // --- text -------------------------------------------------------------
@@ -93,13 +86,11 @@ public:
     Selection selection;
     std::string selectedText() const;
 
-    // How long the current command has been running, when the shell reports
-    // its boundaries (OSC 133). Zero when nothing is running.
+    // How long the current command has run, when the shell marks it (OSC 133).
     std::chrono::steady_clock::duration commandElapsed() const;
     bool commandRunning() const { return screen_.commandRunning; }
 
-    // Called from the reader thread when bytes arrive. Must be cheap and
-    // thread safe: it exists to wake the UI loop up, nothing more.
+    // Called from the reader thread when bytes arrive.
     void setWakeup(std::function<void()> wake);
     std::function<void(const std::string&)> onClipboard;
 

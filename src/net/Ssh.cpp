@@ -19,8 +19,6 @@ std::string Connection::describe() const {
 namespace ssh {
 namespace {
 
-// Shared options for every invocation: multiplexing, plus a connect timeout so
-// an unreachable host reports back instead of hanging the pane.
 void addSharedOptions(std::vector<std::string>& argv, const Connection& conn,
                       int timeoutSeconds) {
     argv.push_back("-o"); argv.push_back("ControlMaster=auto");
@@ -40,8 +38,6 @@ void addSharedOptions(std::vector<std::string>& argv, const Connection& conn,
 }
 
 // Prefixes sshpass when, and only when, the connection actually needs it.
-// `sshpass -p` would put the password in argv where `ps` shows it to every
-// user on the machine; `-e` reads it from the environment instead.
 Invocation begin(const Connection& conn) {
     if (conn.usesPassword()) {
         return {{"sshpass", "-e", "ssh"}, {"SSHPASS=" + conn.password}};
@@ -69,8 +65,6 @@ Invocation interactive(const Connection& conn) {
     call.argv.push_back(conn.label());
 
     if (!conn.remoteDir.empty()) {
-        // cd, then hand over to the login shell. `exec $SHELL -l` keeps the
-        // remote environment identical to a normal ssh login.
         call.argv.push_back("cd " + quoteRemote(conn.remoteDir) +
                             " 2>/dev/null; exec \"$SHELL\" -l");
     }
@@ -105,7 +99,6 @@ Probe probe(const Connection& conn, int timeoutSeconds) {
     }
 
     auto call = command(conn, "true");
-    // Override the shared timeout with the caller's.
     for (std::size_t i = 0; i + 1 < call.argv.size(); ++i) {
         if (call.argv[i + 1].rfind("ConnectTimeout=", 0) == 0) {
             call.argv[i + 1] = "ConnectTimeout=" + std::to_string(timeoutSeconds);

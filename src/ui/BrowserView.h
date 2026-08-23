@@ -1,10 +1,4 @@
-// The file browser.
-//
-// It shows one directory, follows the terminal's working directory when the
-// shell reports it, and hands anything the user opens back to the app. What it
-// shows depends on how much room it has been given: names alone when it is
-// narrow, then sizes, then dates and an emblem, the way a file manager reveals
-// columns as its window widens.
+// The file browser. Shows more as it is given more room.
 #pragma once
 
 #include <chrono>
@@ -35,12 +29,8 @@ public:
         char git = ' '; // M, A, D, ?, or a space
     };
 
-    // What a click on the toolbar landed on.
     enum class Hit { None, Back, Forward, Up, Path, Sort, Filter };
 
-    // --- where we are -----------------------------------------------------
-    // `record` puts the previous directory on the back stack; pass false for a
-    // move that is not the user going somewhere (a refresh, say).
     void setPath(const std::filesystem::path& path, bool record = true);
     const std::filesystem::path& path() const { return path_; }
 
@@ -51,28 +41,22 @@ public:
     bool goUp(const BrowserSettings& settings);
 
     void refresh(const BrowserSettings& settings);
-    // Re-reads only if the directory's timestamp moved. Cheap enough per frame.
     void refreshIfStale(const BrowserSettings& settings);
 
     // --- filtering --------------------------------------------------------
     bool filtering() const { return filtering_; }
-    // Type-to-find: letters jump to the first name that starts with them,
-    // which is what a file manager does. The filter, on `/`, is the other
-    // thing — it narrows the list rather than moving the selection.
     const std::string& findPrefix() const { return find_; }
     bool findExpired() const;
     void clearFind() { find_.clear(); }
     void beginFilter();
     void endFilter(bool keep);
     const std::string& filter() const { return filter_.text; }
-    // Only meaningful while filtering; returns true when the key was consumed.
     bool onFilterKey(const KeyChord& chord, const std::string& raw,
                      const BrowserSettings& settings);
 
-    // --- input ------------------------------------------------------------
-    // Returns true when the key was the browser's to handle.
+    // --- input ------------------------------------------------------------ Returns true
+    // when the key was the browser's to handle.
     bool onKey(const KeyChord& chord, const BrowserSettings& settings);
-    // Row and column within the browser's content area.
     bool onClick(int row, int column, bool doubleClick, const BrowserSettings& settings);
     Hit hitTest(int row, int column, const BrowserSettings& settings) const;
     void hover(int row, int column, const BrowserSettings& settings);
@@ -91,8 +75,6 @@ public:
     const Entry* selected() const;
     std::string statusLine() const;
 
-    // What to do when something is opened. The app decides; the browser only
-    // ever reads the filesystem.
     std::function<void(const std::filesystem::path&)> onEnterDirectory;
     std::function<void(const std::filesystem::path&)> onOpenFile;
     // The toolbar's own buttons, for the ones the app owns.
@@ -104,8 +86,6 @@ private:
     void loadGitStatus();
     void keepSelectionVisible(int visible) const;
 
-    // The toolbar's segments, as a pure function of the width and the state,
-    // so a click and the drawing agree without one having to run first.
     struct Segment {
         Hit hit = Hit::None;
         int from = 0, to = 0; // inclusive
@@ -130,8 +110,7 @@ private:
     std::string find_;
     std::chrono::steady_clock::time_point findAt_{};
 
-    // Consequences of rendering rather than state anyone sets, which is why
-    // render() may adjust them while otherwise leaving the browser alone.
+    // Set by render() rather than by anyone calling in.
     mutable int scroll_ = 0;
     mutable int lastHeight_ = 20;
     mutable int lastWidth_ = 34;

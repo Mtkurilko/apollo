@@ -32,16 +32,13 @@ std::string humanSize(std::uintmax_t bytes) {
     return out.str();
 }
 
-// file_time_type has no portable conversion to a calendar time before C++20,
-// so go via the system clock's epoch and accept a second or two of drift.
+// file_time_type has no portable calendar conversion before C++20.
 std::time_t toTimeT(fs::file_time_type when) {
     const auto systemTime = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
         when - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
     return std::chrono::system_clock::to_time_t(systemTime);
 }
 
-// "14:32" for today, "3 Mar" for this year, "Mar 2024" for anything older —
-// the same trick `ls -l` uses to say the most in the fewest columns.
 std::string humanTime(fs::file_time_type when) {
     const std::time_t stamp = toTimeT(when);
     std::tm parts{};
@@ -82,7 +79,6 @@ std::string permissionString(fs::perms mode, bool directory) {
     return out;
 }
 
-// What kind of thing this is, for its glyph and its colour.
 enum class Kind { Directory, Symlink, Executable, Code, Document, Data, Image, Archive, Media, Plain };
 
 Kind kindOf(const BrowserView::Entry& entry) {
@@ -130,9 +126,6 @@ Kind kindOf(const BrowserView::Entry& entry) {
     return Kind::Plain;
 }
 
-// Every glyph here is one column wide in the stack Apollo runs in. That is not
-// a matter of taste: a two-column glyph would shift the rest of the row and
-// the pane's right edge along with it. The tests measure it.
 std::string glyphFor(Kind kind) {
     switch (kind) {
         case Kind::Directory:  return "▸";
@@ -193,7 +186,6 @@ void BrowserView::setPath(const fs::path& path, bool record) {
 
     if (record) {
         back_.push_back(path_);
-        // Somewhere new means the forward trail no longer leads anywhere.
         forward_.clear();
         if (back_.size() > 128) back_.erase(back_.begin());
     }
@@ -206,7 +198,6 @@ void BrowserView::setPath(const fs::path& path, bool record) {
     gitStatus_.clear();
     all_.clear();
     shown_.clear();
-    // A filter belongs to the directory it was typed in.
     filtering_ = false;
     filter_.clear();
 }
@@ -221,7 +212,6 @@ bool BrowserView::goBack(const BrowserSettings& settings) {
     setPath(target, false);
     forward_.push_back(leaving);
     refresh(settings);
-    // Land on whatever we came out of: that is where the eye already is.
     selectByName(leaving.filename().string());
     return true;
 }
@@ -306,14 +296,11 @@ void BrowserView::applyFilterAndSort(const BrowserSettings& settings) {
     shown_.clear();
     for (const auto& entry : all_) {
         if (!settings.showHidden && !entry.name.empty() && entry.name[0] == '.') continue;
-        // A filter is worth having only if it is forgiving, so it matches the
-        // way the command palette does rather than demanding a substring.
         if (!wanted.empty() && !fuzzy::score(entry.name, wanted)) continue;
         shown_.push_back(entry);
     }
 
-    // directory_iterator promises no order at all, so without this the list
-    // reshuffles itself every time anything changes.
+    // directory_iterator promises no order, so the list would reshuffle on every change.
     std::sort(shown_.begin(), shown_.end(), [&](const Entry& a, const Entry& b) {
         if (settings.dirsFirst && a.directory != b.directory) return a.directory;
 
@@ -351,8 +338,7 @@ void BrowserView::applyFilterAndSort(const BrowserSettings& settings) {
 void BrowserView::loadGitStatus() {
     gitStatus_.clear();
 
-    // Walk up for a .git before running anything: outside a repository this
-    // costs one stat per parent instead of spawning a process that will fail.
+    // Find .git first: outside a repo this is one stat per parent, not a failed spawn.
     std::error_code ec;
     fs::path probe = path_;
     gitRoot_.clear();
@@ -377,8 +363,7 @@ void BrowserView::loadGitStatus() {
         const char worktree = line[1];
         std::string name = line.substr(3);
 
-        // Only the first path component matters: a change deep inside a
-        // directory marks the directory.
+        // Only the first component matters: a change deep inside marks the directory.
         if (const auto slash = name.find('/'); slash != std::string::npos) {
             name = name.substr(0, slash);
         }
@@ -429,13 +414,10 @@ void BrowserView::selectByName(const std::string& name) {
 void BrowserView::moveSelection(int delta) {
     if (shown_.empty()) return;
     selected_ = std::clamp(selected_ + delta, 0, static_cast<int>(shown_.size()) - 1);
-    // A keyboard move always brings the selection back into view.
     keepSelectionVisible(lastHeight_);
 }
 
 void BrowserView::scrollBy(int rows) {
-    // The view moves and the selection stays where it is, the way a mouse
-    // wheel behaves in every file manager.
     const int visible = std::max(1, lastHeight_);
     scroll_ = std::clamp(scroll_ + rows, 0,
                          std::max(0, static_cast<int>(shown_.size()) - visible));
@@ -470,8 +452,6 @@ bool BrowserView::onFilterKey(const KeyChord& chord, const std::string& raw,
         return true;
     }
     if (chord.key == "enter") {
-        // Keep the filter and hand focus back to the list, so the next Enter
-        // opens whatever the filter narrowed things down to.
         endFilter(true);
         return true;
     }
@@ -513,8 +493,6 @@ bool BrowserView::onKey(const KeyChord& chord, const BrowserSettings& settings) 
     }
     if (chord.key == "[") return goBack(settings);
     if (chord.key == "]") return goForward(settings);
-    // `/` narrows the list; letters move the selection. Two different jobs, so
-    // two different keys, and `/` is the one every file manager already uses.
     if (chord.key == "/") { beginFilter(); return true; }
 
     if (chord.key == "left" || chord.key == "backspace") {
@@ -537,9 +515,6 @@ bool BrowserView::onKey(const KeyChord& chord, const BrowserSettings& settings) 
         return true;
     }
 
-    // Type to find: letters move the selection to the first matching name.
-    // This is also what stops a stray letter in the browser from leaking
-    // through into the shell.
     if (chord.key.size() == 1 && chord.key[0] >= ' ' && chord.key[0] <= '~') {
         if (findExpired()) find_.clear();
         findAt_ = std::chrono::steady_clock::now();
@@ -552,9 +527,6 @@ bool BrowserView::onKey(const KeyChord& chord, const BrowserSettings& settings) 
         };
         const std::string needle = lower(wanted);
 
-        // A name that starts with what was typed, and failing that one that
-        // merely contains it — in both cases starting the search after the
-        // current selection so repeated letters walk through the matches.
         const int count = static_cast<int>(shown_.size());
         for (const bool prefixOnly : {true, false}) {
             for (int step = 1; step <= count; ++step) {
@@ -569,15 +541,12 @@ bool BrowserView::onKey(const KeyChord& chord, const BrowserSettings& settings) 
                 return true;
             }
         }
-        // Nothing matched, so the letter does not join the prefix; the
-        // selection stays put rather than jumping somewhere arbitrary.
         return true;
     }
     return false;
 }
 
 bool BrowserView::findExpired() const {
-    // Classic behaviour: a pause ends one search and begins the next.
     return find_.empty() ||
            std::chrono::steady_clock::now() - findAt_ > std::chrono::milliseconds(1200);
 }
@@ -587,13 +556,10 @@ std::vector<BrowserView::Segment> BrowserView::toolbar(const BrowserSettings& se
     std::vector<Segment> segments;
     if (!settings.toolbar || width < 12) return segments;
 
-    // Left: back, forward, up. Three columns each, so they are easy to hit.
     segments.push_back({Hit::Back, 0, 2, canGoBack()});
     segments.push_back({Hit::Forward, 3, 5, canGoForward()});
     segments.push_back({Hit::Up, 6, 8, path_.parent_path() != path_});
 
-    // Right: the sort chip, then the filter button, both only when there is
-    // room for them and the path both.
     const int sortWidth = static_cast<int>(sortLabel(settings).size()) + 2;
     int right = width;
     std::vector<Segment> tail;
@@ -640,7 +606,6 @@ bool BrowserView::onClick(int row, int column, bool doubleClick,
             case Hit::Sort:    if (onCycleSort) onCycleSort(); return true;
             case Hit::Filter:  beginFilter(); return true;
             case Hit::Path:
-                // Clicking the path copies it, which is what it is for.
                 if (onCopyPath) onCopyPath();
                 return true;
             default: return true;
@@ -692,7 +657,6 @@ Element BrowserView::renderToolbar(const Theme& theme, const BrowserSettings& se
     parts.push_back(button("→", Hit::Forward, canGoForward()));
     parts.push_back(button("↑", Hit::Up, path_.parent_path() != path_));
 
-    // The path takes whatever the buttons leave.
     int pathRoom = width - 9;
     const int sortWidth = static_cast<int>(sortLabel(settings).size()) + 2;
     const bool showFilter = width >= 30;
@@ -701,7 +665,6 @@ Element BrowserView::renderToolbar(const Theme& theme, const BrowserSettings& se
     if (showSort) pathRoom -= sortWidth;
 
     if (filtering_ || !filter_.text.empty()) {
-        // While filtering, the path's room goes to the thing being typed.
         parts.push_back(text("/") | color(toFtx(theme.warning)));
         parts.push_back(filter_.render(theme, "filter", filtering_));
         parts.push_back(filler());
@@ -795,7 +758,6 @@ Element BrowserView::render(const Theme& theme,
 
     keepSelectionVisible(visible);
 
-    // Column widths, decided once so every row lines up.
     const int iconWidth = settings.icons ? 3 : 1;
     const int gitWidth = settings.gitStatus ? 2 : 0;
     const int sizeWidth = density == BrowserSettings::Density::Compact ? 0 : 7;

@@ -31,8 +31,7 @@ struct Pipe {
     ~Pipe() { closeRead(); closeWrite(); }
 };
 
-// environ plus the caller's overlay, with overlay entries replacing any
-// inherited variable of the same name.
+// environ plus the overlay, with the overlay replacing same-named entries.
 std::vector<std::string> mergedEnv(const std::vector<std::string>& extra) {
     std::vector<std::string> merged;
     for (char** e = environ; e && *e; ++e) {
@@ -102,8 +101,7 @@ Result spawnAndCollect(const std::vector<std::string>& argv,
     outPipe.closeWrite();
     errPipe.closeWrite();
 
-    // Read both streams together; draining them one at a time deadlocks as
-    // soon as the child fills the other pipe's buffer.
+    // Read both streams together, or the child fills one pipe and deadlocks.
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     pollfd fds[2] = {{outPipe.fd[0], POLLIN, 0}, {errPipe.fd[0], POLLIN, 0}};
     std::string* sink[2] = {&result.out, &result.err};
@@ -240,10 +238,7 @@ bool detach(const std::vector<std::string>& argv, const std::string& workingDir)
     for (const auto& arg : argv) raw.push_back(const_cast<char*>(arg.c_str()));
     raw.push_back(nullptr);
 
-    // Double-fork: the middle process exits immediately and the grandchild is
-    // reparented to init, so it never becomes a zombie. Doing this rather than
-    // ignoring SIGCHLD matters, because the PTY sessions and process::run()
-    // both rely on waitpid() still working.
+    // Double-fork so the grandchild reparents to init and never becomes a zombie.
     const pid_t middle = ::fork();
     if (middle < 0) return false;
 
@@ -253,7 +248,6 @@ bool detach(const std::vector<std::string>& argv, const std::string& workingDir)
 
         if (!workingDir.empty() && ::chdir(workingDir.c_str()) != 0) ::_exit(127);
 
-        // Nothing detached should scribble on Apollo's own terminal.
         const int null = ::open("/dev/null", O_RDWR);
         if (null >= 0) {
             ::dup2(null, STDIN_FILENO);

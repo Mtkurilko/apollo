@@ -22,8 +22,6 @@ using namespace ftxui;
 
 namespace {
 
-// Two events Apollo posts to itself. Their payloads cannot collide with
-// anything a terminal sends, which is why they are spelled out in full.
 const Event kTick = Event::Special("apollo:tick");
 const Event kOutput = Event::Special("apollo:output");
 const Event kControl = Event::Special("apollo:control");
@@ -63,8 +61,7 @@ App::App(Config& config, Options options)
     browser_.onEnterDirectory = [this](const fs::path& path) {
         browser_.setPath(path);
         browser_.refresh(config_.browser());
-        // Keep the shell in step, so the two panes never disagree about where
-        // "here" is.
+        // Keep the shell in step, so both panes agree on the current directory.
         if (term::Session* session = active(); session && session->connection().empty()) {
             session->sendText("cd " + process::shellQuote(path.string()) + "\r");
         }
@@ -81,7 +78,6 @@ App::App(Config& config, Options options)
             focus_ = Focus::Terminal;
             return;
         }
-        // No editor configured: hand it to the desktop rather than guessing.
         if (!process::openWithDesktop(path.string())) {
             say("could not open " + path.filename().string(), true);
         } else {
@@ -144,9 +140,6 @@ void App::applyConfig() {
 void App::rebuildCommands() {
     registry_.clear();
 
-    // Only the user's own commands live here. Everything Apollo does itself is
-    // an action, so the palette and the bind table cannot drift apart or list
-    // the same thing twice.
     for (const auto& declared : config_.commands()) {
         registry_.addDeclared(declared.name, declared.exec, declared.summary,
                               "apollo.conf:" + std::to_string(declared.line + 1),
@@ -175,13 +168,9 @@ bool App::newTab(const Connection* connection, const std::string& initialCommand
     term::Session::Options options;
     options.scrollback = config_.terminal().scrollback;
     options.cwd = browser_.path().string();
-    // So `apollo ...` typed in this shell reaches this Apollo rather than
-    // starting a second one inside it.
     if (control_.running()) options.env.push_back("APOLLO_SOCKET=" + control_.path());
 
     if (connection) {
-        // A remote tab is a real ssh session in a pty. Nothing about it is
-        // simulated, which is why everything works over it.
         const ssh::Invocation call = ssh::interactive(*connection);
         options.argv = call.argv;
         options.env = call.env;
@@ -202,10 +191,7 @@ bool App::newTab(const Connection* connection, const std::string& initialCommand
 
     session->setWakeup([this] { screen_.PostEvent(kOutput); });
     session->onClipboard = [this](const std::string& base64) {
-        // OSC 52: the program running in this terminal asking to put something
-        // on the clipboard. This is how `vim` yanks to the system clipboard
-        // over ssh. It is off unless the user turns it on, because the request
-        // can come from anything the shell runs.
+        // OSC 52: the program asking to set the clipboard.
         if (!config_.terminal().osc52Clipboard) return;
         const std::string payload = decodeBase64(base64);
         if (payload.empty()) return;
@@ -296,8 +282,6 @@ std::string App::keyHintFor(const std::string& action) const {
 }
 
 void App::runCommand(const Command& command) {
-    // Commands run in the terminal, where their output belongs and where they
-    // can ask questions.
     if (term::Session* session = active()) {
         session->sendText(command.exec + "\r");
         focus_ = Focus::Terminal;
@@ -379,7 +363,6 @@ void App::act(const std::string& action, const std::vector<std::string>& args) {
     }
     if (action == "paste_path") {
         std::string wanted = clipboard();
-        // A path copied from anywhere tends to arrive with a newline on it.
         while (!wanted.empty() && (wanted.back() == '\n' || wanted.back() == '\r')) {
             wanted.pop_back();
         }
@@ -479,8 +462,6 @@ void App::act(const std::string& action, const std::vector<std::string>& args) {
         std::string error;
         const auto conn = config_.resolveConnection(argument, error);
         if (!conn) {
-            // The error carries the full explanation; the status bar gets its
-            // first line and the palette can show the rest.
             say(error.substr(0, error.find('\n')), true);
             return;
         }
@@ -522,8 +503,6 @@ void App::handleControl(const std::string& message) {
     const std::string argument = space == std::string::npos ? "" : message.substr(space + 1);
 
     if (verb == "home") {
-        // What `apollo` on its own has always meant: back to the workspace,
-        // both panes together.
         act("cd", {config_.general().workspace});
         say("home");
         return;
@@ -562,8 +541,6 @@ void App::openPalette() {
 
     for (const auto& action : knownActions()) {
         if (action.takesArgument) continue; // those need a target, offered below
-        // Title first, identifier second: a palette should read as a list of
-        // things to do, but still be searchable by the name in the config.
         items.push_back({action.summary, action.name, "", keyHintFor(action.name),
                          [this, name = action.name] { act(name, {}); }});
     }
@@ -593,8 +570,6 @@ void App::openPalette() {
 // --- events ----------------------------------------------------------------
 
 void App::tick() {
-    // Blink, notice a config the user saved in their editor, and re-read the
-    // directory if something outside Apollo changed it.
     const auto now = std::chrono::steady_clock::now();
     if (config_.reloadIfChanged()) {
         applyConfig();
@@ -610,14 +585,12 @@ void App::tick() {
 
     for (auto& session : tabs_) session->pump();
 
-    // The shell told us where it is; follow it.
     if (config_.general().followCwd) {
         if (term::Session* session = active(); session && !session->cwd().empty()) {
             std::error_code ec;
             const fs::path reported = fs::weakly_canonical(session->cwd(), ec);
 
-            // A cd Apollo asked for is in flight: ignore what the shell says
-            // until it has caught up, or the browser snaps back for a frame.
+            // Ignore the shell's cwd until it catches up with a cd we asked for.
             if (!pendingCwd_.empty()) {
                 if (reported == pendingCwd_ ||
                     std::chrono::steady_clock::now() > pendingCwdUntil_) {
@@ -632,10 +605,6 @@ void App::tick() {
 
     if (!status_.empty() && now > statusUntil_) status_.clear();
 
-    // A session that exited cleanly closes its tab, the way a terminal window
-    // closes when you type `exit`. One that failed stays put with its output
-    // on screen — an ssh that could not connect has something to say, and
-    // vanishing would take the message with it.
     for (int i = static_cast<int>(tabs_.size()) - 1; i >= 0; --i) {
         auto& session = tabs_[static_cast<std::size_t>(i)];
         if (session->running()) continue;
@@ -667,8 +636,7 @@ bool App::onMouse(const Event& event) {
         layout.browserWidth > 0 && !layout.stacked && mouse.x >= browserLeft &&
         mouse.x < browserRight;
 
-    // The grab zone straddles the two pane borders and the gap between them,
-    // so it is a few columns wide even when the gap is zero.
+    // Straddles both pane borders and the gap, so it is grabbable with gaps = 0.
     const int divider = dividerColumn(layout);
     const bool onDivider =
         divider >= 0 && mouse.x >= divider && mouse.x <= divider + decoration.gaps + 1;
@@ -683,8 +651,6 @@ bool App::onMouse(const Event& event) {
                 put("browser.width", std::to_string(settled));
             }
         } else {
-            // Clamped to what the layout will actually honour, so the pane
-            // follows the pointer instead of stopping while the number climbs.
             layout::Request request;
             request.width = layout.width;
             request.gaps = decoration.gaps;
@@ -706,8 +672,6 @@ bool App::onMouse(const Event& event) {
     if (mouse.button == Mouse::WheelUp || mouse.button == Mouse::WheelDown) {
         const int direction = mouse.button == Mouse::WheelUp ? 1 : -1;
         if (inBrowserColumns) {
-            // The list scrolls and the selection stays put, as it does in a
-            // file manager; the keyboard is what moves the selection.
             browser_.scrollBy(-direction * 3);
             return true;
         }
@@ -749,8 +713,7 @@ bool App::onMouse(const Event& event) {
     if (inBrowserColumns) {
         focus_ = Focus::Browser;
         if (mouse.motion == Mouse::Pressed) {
-            // Terminals do not report double clicks, so time them here: a
-            // second press on the same row inside 400ms opens the entry.
+            // Terminals do not report double clicks, so time them here.
             const int row = mouse.y - topOffset;
             const int column = mouse.x - browserLeft - frame;
             const auto now = std::chrono::steady_clock::now();
@@ -774,8 +737,7 @@ bool App::onMouse(const Event& event) {
     const int row = mouse.y - topOffset;
     if (column < 0 || row < 0 || row >= layout.terminalRows) return true;
 
-    // A program that asked for mouse reporting gets the event; otherwise the
-    // drag is a text selection.
+    // A program that asked for mouse reporting gets the event; otherwise it is a selection.
     if (session->screen().mouseTracking != 0 && !session->scrolled()) {
         const int button = mouse.motion == Mouse::Released ? 3 : 0;
         session->sendMouse(button, column, row, mouse.motion != Mouse::Released,
@@ -819,13 +781,11 @@ bool App::onEvent(const Event& event) {
     const std::string raw = event.input();
     const KeyChord chord = decodeKey(raw);
 
-    // The splash is in the way of everything and yields to anything.
     if (boot_.running()) {
         boot_.dismiss();
         return true;
     }
 
-    // Overlays, in the order they sit on top of each other.
     if (onboard_.isOpen()) {
         onboard_.onKey(chord, raw);
         return true;
@@ -859,8 +819,6 @@ bool App::onEvent(const Event& event) {
         return true;
     }
 
-    // The leader. Pressing it arms the next key; pressing it twice sends it on
-    // to the terminal, which is the escape hatch if you actually wanted it.
     if (leaderArmed_) {
         leaderArmed_ = false;
         if (chord == config_.general().leader) {
@@ -882,15 +840,13 @@ bool App::onEvent(const Event& event) {
     if (!chord.empty() && runBind(chord)) return true;
 
     if (focus_ == Focus::Browser) {
-        // A filter box takes everything while it is open.
         if (browser_.filtering()) {
             browser_.onFilterKey(chord, raw, config_.browser());
             return true;
         }
         if (chord.key == "tab") { focus_ = Focus::Terminal; return true; }
         if (browser_.onKey(chord, config_.browser())) return true;
-        // Anything the browser does not want goes to the terminal, so typing
-        // never disappears.
+        // Anything the browser does not want goes to the terminal, so typing never disappears.
         focus_ = Focus::Terminal;
     }
 
@@ -956,16 +912,10 @@ Element App::renderStatusBar(const Layout& layout) {
                        color(toFtx(theme_->muted)));
     }
 
-    // The path gets whatever the fixed pieces leave. Everything optional is
-    // dropped as the window narrows, rather than every piece being squeezed
-    // until none of them is readable.
-    // The reminders get a third of the bar at most, and the path gets the rest.
     const int hintRoom = std::max(0, std::min(width / 2, width - 28));
     Element hints = renderHints(hintRoom);
     const bool showBrowserStats = width >= 96 && status_.empty() && config_.issues().empty();
     int reserved = 2 + hintRoom;
-    // Whatever sits on the right takes room from the path, not from the gap
-    // between them.
     const std::size_t problems = config_.issues().size();
     const std::string problemNote =
         problems == 0 ? ""
@@ -996,8 +946,6 @@ Element App::renderStatusBar(const Layout& layout) {
     if (session && session->commandRunning()) {
         const auto elapsed =
             std::chrono::duration_cast<std::chrono::seconds>(session->commandElapsed()).count();
-        // The shell only reports this when shell integration is installed, so
-        // it is quietly absent rather than wrong when it is not.
         static const char* frames[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
         const std::string spinner =
             config_.decoration().animate
@@ -1038,8 +986,6 @@ Element App::renderStatusBar(const Layout& layout) {
 }
 
 Element App::renderHints(int room) {
-    // What the keys actually are, read from the bind table rather than
-    // written out, so rebinding something changes the reminder too.
     struct Hint { std::string keys; std::string what; };
     const std::vector<Hint> all = {
         {keyHintFor("command_palette"), "commands"},
@@ -1049,7 +995,6 @@ Element App::renderHints(int room) {
         {keyHintFor("quit"), "quit"},
     };
 
-    // Fit as many as there is room for, most useful first.
     Elements parts;
     int used = 0;
     for (const auto& hint : all) {
@@ -1121,8 +1066,6 @@ Element App::renderHelp(int width, int height) {
             const Bind& bind = binds[static_cast<std::size_t>(index)];
             const ActionInfo* action = findAction(bind.action);
 
-            // Fixed widths rather than flex: letting FTXUI shrink these cuts
-            // words in half and the columns stop lining up.
             std::string chord = elide(bind.chord.describe(), chordWidth);
             chord.resize(static_cast<std::size_t>(chordWidth) +
                              (chord.size() - displayWidth(chord)),
@@ -1159,7 +1102,6 @@ Element App::renderHelp(int width, int height) {
 }
 
 Element App::render() {
-    // While the wizard is previewing a theme, the whole interface shows it.
     if (onboard_.isOpen() && !onboard_.previewTheme().empty()) {
         if (auto preview = Theme::builtin(onboard_.previewTheme())) {
             previewTheme_ = *preview;
@@ -1201,7 +1143,6 @@ Element App::render() {
     if (layout.browserWidth == 0) {
         body = std::move(terminalPane);
     } else {
-        // Given room, the pane wears a mark, the way the old window did.
         const bool wide = BrowserSettings::densityFor(layout.browserWidth) ==
                           BrowserSettings::Density::Wide;
         const std::string browserTitle =
@@ -1251,8 +1192,6 @@ Element App::render() {
         return boot_.render(*theme_, decoration, layout.width, layout.height);
     }
 
-    // Overlays. The interface behind them dims, so the eye lands on the thing
-    // asking for attention.
     const bool hasOverlay = onboard_.isOpen() || configView_.isOpen() || palette_.isOpen() ||
                             helpOpen_;
     if (hasOverlay && decoration.dimInactive) root = dim(std::move(root));
@@ -1316,8 +1255,7 @@ int App::run() {
         boot_.start(std::move(lines), config_.decoration().animate);
     }
 
-    // Ctrl-C and Ctrl-Z belong to whatever is running in the terminal, not to
-    // Apollo; without this FTXUI would raise the signals itself.
+    // Ctrl-C and Ctrl-Z belong to the terminal; FTXUI would otherwise raise them itself.
     screen_.ForceHandleCtrlC(false);
     screen_.ForceHandleCtrlZ(false);
     screen_.TrackMouse(true);

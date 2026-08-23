@@ -10,8 +10,7 @@
 #include "ui/App.h"
 
 int main(int argc, char** argv) {
-    // wcwidth needs a UTF-8 locale to know that a CJK glyph is two columns
-    // wide; without this every wide character would misalign the grid.
+    // wcwidth needs a UTF-8 locale, or every wide character misaligns the grid.
     std::setlocale(LC_CTYPE, "");
 
     const std::vector<std::string> args(argv + 1, argv + argc);
@@ -19,9 +18,6 @@ int main(int argc, char** argv) {
     apollo::Config config;
     config.load();
 
-    // Only touch the filesystem for commands that are going to use a config.
-    // `apollo --help` should be answerable without writing anything, and
-    // pressing Tab should certainly not create one.
     static const std::vector<std::string> readOnly = {
         "--version", "-v", "version", "--help", "-h", "help", "completions", "__complete",
     };

@@ -18,9 +18,7 @@ int charWidth(char32_t cp) {
     const int width = ::wcwidth(static_cast<wchar_t>(cp));
     if (width >= 0) return width;
 
-    // wcwidth says "unknown" for unassigned code points and for anything the
-    // current locale cannot name. Treating those as one column keeps the grid
-    // in step with what almost every terminal does.
+    // wcwidth returns -1 for anything the locale cannot name; call those one column.
     return 1;
 }
 
@@ -59,8 +57,6 @@ void Row::ensure(int width) {
 }
 
 void Row::trim() {
-    // Scrollback keeps only what was actually written. On a wide terminal that
-    // is the difference between a few megabytes and a few dozen.
     while (!cells.empty() && cells.back().blank()) cells.pop_back();
     cells.shrink_to_fit();
 }
@@ -117,8 +113,6 @@ void Screen::clearRow(Row& row, int from, int to) {
         Cell& cell = row.cells[static_cast<std::size_t>(x)];
         cell.cp = U' ';
         cell.width = 1;
-        // Erasing keeps the current background: that is how a program paints a
-        // coloured panel by setting a background and clearing to the edge.
         cell.attr = Attrs{kColorDefault, attrs_.bg, 0};
     }
 }
@@ -167,8 +161,6 @@ void Screen::put(char32_t cp) {
     cell.width = static_cast<std::uint8_t>(width);
     cell.attr = attrs_;
 
-    // A double-width glyph owns the column to its right; marking it width 0
-    // stops the renderer emitting a stray blank there.
     if (width == 2 && x_ + 1 < cols_) {
         Cell& tail = row.cells[static_cast<std::size_t>(x_ + 1)];
         tail.cp = 0;
@@ -403,8 +395,6 @@ void Screen::pushHistory(Row&& row) {
 void Screen::scrollRegionUp(int count) {
     const int n = std::clamp(count, 1, regionBottom_ - regionTop_ + 1);
     for (int i = 0; i < n; ++i) {
-        // Only a full-height region feeds the scrollback. Lines pushed out of a
-        // smaller region are part of somebody's layout, not of the transcript.
         if (regionTop_ == 0 && regionBottom_ == rows_ - 1) {
             pushHistory(std::move(grid_[0]));
         }
@@ -501,9 +491,6 @@ void Screen::reset() {
 // --- resizing --------------------------------------------------------------
 
 void Screen::reflow(int newCols) {
-    // Rebuild the transcript as logical lines, then lay it out again at the new
-    // width. This is what stops a window resize turning a session's history
-    // into ragged fragments.
     struct Logical {
         std::vector<Cell> cells;
         bool promptStart = false;
@@ -527,13 +514,8 @@ void Screen::reflow(int newCols) {
         continuing = row.wrapped;
     }
 
-    // Everything from the cursor's row down is still being written; keep it as
-    // part of the live screen rather than folding it into history.
     int cursorLogical = -1;
     int cursorOffset = 0;
-    // Walk the grid as it actually is, not as it is about to become: when the
-    // window loses rows at the same time as it changes width, iterating to the
-    // new row count would silently drop the bottom of the screen.
     for (int y = 0; y < static_cast<int>(grid_.size()); ++y) {
         const Row& row = grid_[static_cast<std::size_t>(y)];
         absorb(row, !continuing);
@@ -549,7 +531,6 @@ void Screen::reflow(int newCols) {
         continuing = row.wrapped;
     }
 
-    // Drop trailing blank logical lines so a resize does not leave a gap.
     while (logical.size() > 1 && logical.back().cells.empty()) {
         if (cursorLogical == static_cast<int>(logical.size()) - 1) break;
         logical.pop_back();
@@ -582,7 +563,6 @@ void Screen::reflow(int newCols) {
         } while (at < source.cells.size());
     }
 
-    // The last `rows_` lines become the screen; the rest is history again.
     const int keep = std::min(static_cast<int>(laidOut.size()), rows_);
     const int historyEnd = static_cast<int>(laidOut.size()) - keep;
 
@@ -613,20 +593,17 @@ void Screen::resize(int rows, int cols) {
     rows_ = rows;
 
     if (alternate_) {
-        // A full screen program owns the alternate buffer and will repaint it
-        // the moment SIGWINCH arrives; reflowing it would only flicker.
+        // A full screen program repaints on SIGWINCH; reflowing the alt buffer only flickers.
         cols_ = cols;
         grid_.assign(static_cast<std::size_t>(rows_), Row{});
         for (auto& row : grid_) row.ensure(cols_);
         savedGrid_.resize(static_cast<std::size_t>(rows_));
         for (auto& row : savedGrid_) row.ensure(cols_);
     } else if (widthChanged) {
-        // reflow() rebuilds both the history and the grid at the new width and
-        // sizes the grid to rows_ itself, so the old grid is left intact here.
+        // reflow() rebuilds history and grid and sizes the grid itself.
         reflow(cols);
         cols_ = cols;
     } else {
-        // Same width, fewer rows: the lines that fall off the top join history.
         while (static_cast<int>(grid_.size()) > rows_) {
             if (y_ > 0) { pushHistory(std::move(grid_.front())); grid_.erase(grid_.begin()); --y_; }
             else grid_.pop_back();

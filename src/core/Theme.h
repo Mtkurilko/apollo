@@ -1,5 +1,4 @@
-// Colours, kept free of any rendering library so the core stays portable and
-// testable. The UI layer converts Rgb into whatever its backend wants.
+// Colours. No rendering library here, so core stays portable.
 #pragma once
 
 #include <array>
@@ -16,7 +15,6 @@ struct Rgb {
     std::string hex() const;
     // Accepts #rgb, #rrggbb, rgb(r,g,b) and the 16 ANSI colour names.
     static std::optional<Rgb> parse(const std::string& text);
-    // Perceptual brightness, 0..1. Used to pick readable foregrounds.
     float luma() const;
     Rgb mix(const Rgb& other, float t) const;
 
@@ -24,8 +22,6 @@ struct Rgb {
     bool operator!=(const Rgb& o) const { return !(*this == o); }
 };
 
-// The colours Apollo's own chrome uses. The terminal grid uses `ansi` for
-// programs that ask for indexed colours.
 struct Theme {
     std::string name = "apollo";
 
@@ -41,20 +37,16 @@ struct Theme {
     Rgb error{247, 118, 142};
     Rgb selection{40, 52, 87};
 
-    // 0-7 normal, 8-15 bright.
     std::array<Rgb, 16> ansi{};
 
-    // Built-in themes, by name. Returns nullopt for an unknown name.
     static std::optional<Theme> builtin(const std::string& name);
     static std::vector<std::string> builtinNames();
 
     // Applies `key = #rrggbb` pairs from a decoration block or a theme file.
-    // Unknown keys are reported rather than ignored.
     bool setColor(const std::string& key, const std::string& value);
     static std::vector<std::string> colorKeys();
 
-    // Recomputes the 16 ANSI colours from the theme's own palette. Call this
-    // after overriding colours, or the terminal and the chrome drift apart.
+    // Recomputes the 16 ANSI colours from the theme's own palette.
     void rebuildRamp();
 };
 

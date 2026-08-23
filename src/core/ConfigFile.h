@@ -1,26 +1,13 @@
-// Apollo's configuration language: a small, sectioned, comment-friendly format
-// in the spirit of Hyprland's.
-//
-//     # a comment
-//     $accent = #7aa2f7          # a variable, usable as $accent below
+// Parser and writer for apollo.conf.
 //
 //     general {
 //         workspace = ~/Apollo
 //     }
+//     connection lab { host = 10.0.0.5 }
+//     bind = CTRL, K, command_palette
 //
-//     connection lab {           # a labelled section
-//         host = 10.0.0.5
-//     }
-//
-//     bind = CTRL, K, command_palette   # keys may repeat
-//     source = ~/.apollo/themes/nord.conf
-//
-// The parser keeps the original source text alongside the parsed tree, so
-// `apollo config set` rewrites one value and leaves every comment, blank line
-// and bit of alignment exactly where the user put it.
-//
-// Comment rule: `#` starts a comment at the beginning of a line, or when it is
-// surrounded by whitespace. `#7aa2f7` is therefore a colour, not a comment.
+// Rewriting a value keeps the file's comments and layout. `#` starts a
+// comment at the start of a line or between spaces, so #7aa2f7 is a colour.
 #pragma once
 
 #include <filesystem>
@@ -39,7 +26,6 @@ struct ConfigDiagnostic {
     std::string format() const;
 };
 
-// One `key = value` line.
 struct ConfigEntry {
     std::string key;
     std::string value;    // variables expanded, quotes stripped
@@ -64,16 +50,14 @@ struct ConfigNode {
 
 class ConfigFile {
 public:
-    // Parsing. `parse` is the unit-testable entry point; `load` reads a file
-    // and follows any `source =` directives it contains.
     bool parse(const std::string& text, const std::string& originName = "<memory>");
     bool load(const std::filesystem::path& path);
 
     // Writes the current text atomically, with owner-only permissions.
     bool save(const std::filesystem::path& path, std::string* error = nullptr) const;
 
-    // --- reading ----------------------------------------------------------
-    // Paths are dotted: "general.workspace", "connection.lab.host".
+    // --- reading ---------------------------------------------------------- Paths are
+    // dotted: "general.workspace", "connection.lab.host".
     std::optional<std::string> get(const std::string& path) const;
     std::string get(const std::string& path, const std::string& fallback) const;
     std::vector<std::string> getAll(const std::string& path) const;
@@ -87,15 +71,10 @@ public:
     const std::vector<ConfigDiagnostic>& diagnostics() const { return diags_; }
     bool ok() const { return diags_.empty(); }
 
-    // --- writing ----------------------------------------------------------
-    // Rewrites the value in place when the key exists, otherwise inserts it
-    // into its section, creating the section at the end of the file if needed.
     void set(const std::string& path, const std::string& value);
     bool unset(const std::string& path);
     bool removeSection(const std::string& path);
-    // Appends a repeatable top-level key such as `bind` or `command`.
     void append(const std::string& key, const std::string& value);
-    // Drops every repeated `key` whose value starts with `valuePrefix`.
     bool removeMatching(const std::string& key, const std::string& valuePrefix);
 
     std::string text() const;
@@ -104,7 +83,6 @@ public:
     static bool asBool(const std::string& value, bool fallback);
     static int asInt(const std::string& value, int fallback);
     static float asFloat(const std::string& value, float fallback);
-    // Splits "a, b, c" honouring quotes, so `command = x, y, "a, b"` works.
     static std::vector<std::string> split(const std::string& value, char sep = ',');
     static std::string trim(const std::string& text);
 
@@ -113,7 +91,6 @@ private:
 
     void reparse();
     ConfigNode* findSection(const std::string& path, bool create);
-    // Splits "connection.lab.host" into {"connection","lab"} + "host".
     bool resolve(const std::string& path,
                  std::vector<std::string>& sectionPath,
                  std::string& key) const;

@@ -3,11 +3,10 @@
 #
 #   ./install.sh                 install to /usr/local (sudo only if needed)
 #   PREFIX=~/.local ./install.sh install somewhere that needs no password
-#   ./install.sh --uninstall     take it away again
+#   ./install.sh --uninstall     remove it
 #
-# The only things this needs on the machine are a C++17 compiler, CMake and
-# git. FTXUI is fetched and built into the binary, so nothing is left behind
-# for a package manager to break later.
+# Needs a C++17 compiler, CMake and git. FTXUI is fetched and built into the
+# binary, so there is no library left behind for a package manager to break.
 
 set -eu
 

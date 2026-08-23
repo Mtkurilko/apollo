@@ -1,9 +1,4 @@
-// The escape sequence parser.
-//
-// Bytes arrive from the pty, and this turns them into operations on a Screen.
-// The state machine follows the shape of the DEC/ECMA-48 one that xterm and
-// every terminal since implements, which is what lets vim, tmux, htop, less and
-// full colour output behave here exactly as they do anywhere else.
+// Escape sequence parser: a DEC/ECMA-48 state machine driving a Screen.
 #pragma once
 
 #include <functional>
@@ -22,12 +17,9 @@ public:
     void feed(std::string_view bytes);
     void reset();
 
-    // Things the terminal owes the program: cursor position reports, device
-    // attributes, and so on. The session writes these back to the pty.
     std::string takeReplies();
 
-    // OSC 52. A program asking to put something on the clipboard; the UI
-    // decides whether to honour it.
+    // OSC 52.
     std::function<void(const std::string&)> onClipboard;
     // OSC 133 D — a command finished, with its exit status if it gave one.
     std::function<void(int)> onCommandFinished;
@@ -67,13 +59,10 @@ private:
     std::string oscBuffer_;
     std::string replies_;
 
-    // UTF-8 decoding, carried across feed() calls so a split sequence still
-    // produces one character.
+    // Carried across feed() calls so a split sequence still makes one character.
     char32_t utf8_ = 0;
     int utf8Remaining_ = 0;
 
-    // Character sets. G0/G1 hold 'B' for ASCII or '0' for DEC line drawing,
-    // which is how many programs still draw boxes.
     char charset_[2] = {'B', 'B'};
     int activeCharset_ = 0;
 };

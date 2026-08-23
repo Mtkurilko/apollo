@@ -21,8 +21,7 @@ namespace {
 
 constexpr std::size_t kMaxMessage = 4096;
 
-// AF_UNIX paths are capped near 104 bytes on macOS and ssh-style truncation
-// failures here are silent, so the name is built short on purpose.
+// AF_UNIX paths cap near 104 bytes on macOS and fail silently, so keep it short.
 std::string socketPathFor(pid_t pid) {
     return "/tmp/apollo." + std::to_string(::getuid()) + "." + std::to_string(pid) + ".sock";
 }
@@ -38,9 +37,6 @@ bool fillAddress(sockaddr_un& address, const std::string& path, std::string* err
     return true;
 }
 
-// An instance that was killed rather than closed leaves its socket behind.
-// Sweeping ours up on the way in keeps /tmp tidy and stops a dead socket from
-// being mistaken for a live one.
 void removeAbandonedSockets() {
     const std::string prefix = "apollo." + std::to_string(::getuid()) + ".";
 

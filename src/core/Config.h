@@ -1,9 +1,5 @@
-// The typed view of ~/.apollo/apollo.conf.
-//
-// ConfigFile knows about text; this knows what the text means. Every setting
-// Apollo has is declared once in schema(), which drives the config editor, the
-// `apollo config` output, tab completion and validation, so a new setting
-// cannot be added in one place and forgotten in the others.
+// Typed view of apollo.conf. Every setting is declared once in schema(),
+// which drives validation, the editor, the CLI and completion.
 #pragma once
 
 #include <chrono>
@@ -26,8 +22,6 @@ struct GeneralSettings {
     std::string defaultConnection;
     bool followCwd = true;   // the browser tracks the shell's directory
     bool confirmQuit = false;
-    // The prefix key everything else hides behind. Ctrl+Space is chosen
-    // because virtually nothing else wants it.
     KeyChord leader{ModCtrl, "space"};
 };
 
@@ -50,8 +44,7 @@ struct TerminalSettings {
     bool bell = false;
     bool copyOnSelect = true;
     bool shellIntegration = true; // OSC 7/133: cwd tracking and prompt jumps
-    // OSC 52. Off by default: it lets anything the shell runs write to the
-    // system clipboard, which is useful and worth choosing deliberately.
+    // OSC 52.
     bool osc52Clipboard = false;
     std::string wordChars = "_-./@~";
 };
@@ -70,8 +63,6 @@ struct BrowserSettings {
     bool toolbar = true;  // back/forward, the path, sort and filter
     bool details = true;  // the line about the selected entry
 
-    // How much the browser shows depends on how much room it has been given,
-    // the way a file manager reveals columns as you widen its window.
     enum class Density { Compact, Normal, Wide };
     static Density densityFor(int columns) {
         if (columns < 30) return Density::Compact;
@@ -80,7 +71,6 @@ struct BrowserSettings {
     }
 };
 
-// A `command = name, exec, "summary"` line.
 struct DeclaredCommand {
     std::string name;
     std::string exec;
@@ -96,8 +86,6 @@ public:
     bool loadFrom(const std::filesystem::path& path);
     bool loadText(const std::string& text);        // for tests
     bool save(std::string* error = nullptr);
-    // Re-reads the file if its mtime moved. This is what makes the config feel
-    // live: save in your editor and Apollo restyles itself.
     bool reloadIfChanged();
     bool exists() const;
     std::filesystem::path path() const { return path_; }
@@ -117,13 +105,9 @@ public:
     const std::vector<Connection>& connections() const { return connections_; }
     const Connection* connection(const std::string& name) const;
 
-    // The rule, unchanged since Apollo learned about more than one host:
-    // with one connection configured a bare `apollo connect` uses it; with
-    // several you must name one, unless a default has been chosen.
     std::optional<Connection> resolveConnection(const std::string& requested,
                                                 std::string& error) const;
 
-    // Parse errors, unknown keys, bad binds, connections missing credentials.
     const std::vector<std::string>& issues() const { return issues_; }
 
     // --- writing ----------------------------------------------------------
@@ -150,8 +134,6 @@ public:
         std::string defaultValue;
         std::string summary;
         std::vector<std::string> choices;
-        // True when `choices` are suggestions rather than the only options —
-        // a theme can also be a file the user wrote.
         bool openChoices = false;
         int min = 0, max = 0; // for Int
 
@@ -159,22 +141,17 @@ public:
     };
     static const std::vector<Setting>& schema();
     static const Setting* setting(const std::string& path);
-    // Every theme available right now: the built-in ones, plus any *.conf in
-    // ~/.apollo/themes.
     static std::vector<std::string> availableThemes();
-    // Current value, falling back to the schema default.
     std::string valueOf(const Setting& setting) const;
     // Empty when the value is acceptable, otherwise the reason it is not.
     static std::string validate(const Setting& setting, const std::string& value);
 
-    // The binds Apollo ships with. User binds are layered on top and win.
     static const std::vector<Bind>& defaultBinds();
 
 private:
     void derive();
     void deriveTheme();
-    // Reads ~/.apollo/themes/<name>.conf: an optional `base = <built-in>` plus
-    // a `colors { }` block. Returns nullopt when there is no such file.
+    // Reads ~/.apollo/themes/<name>.conf: `base = <built-in>` plus a colors block.
     std::optional<Theme> loadThemeFile(const std::string& name);
     void deriveBinds();
     void note(const std::string& issue);
@@ -194,8 +171,6 @@ private:
     std::vector<std::string> issues_;
 };
 
-// Reads a pre-0.3 key=value properties file and returns the equivalent modern
-// config text, or nullopt when there is nothing to migrate.
 std::optional<std::string> migrateLegacyConfig(const std::filesystem::path& properties);
 
 } // namespace apollo

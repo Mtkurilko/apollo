@@ -79,8 +79,7 @@ std::string elide(const std::string& text, int width) {
 
 namespace {
 
-// Steps one whole UTF-8 character, so arrowing through an accented word does
-// not leave the cursor stranded mid-sequence.
+// Whole characters, so an arrow key cannot strand the cursor mid-sequence.
 int stepLeft(const std::string& text, int at) {
     if (at <= 0) return 0;
     --at;
@@ -156,8 +155,6 @@ bool LineEdit::onKey(const KeyChord& chord, const std::string& raw) {
 
 Element LineEdit::render(const Theme& theme, const std::string& placeholder, bool focused,
                          bool mask) const {
-    // `text` is this struct's own field, so the element builder needs
-    // qualifying throughout.
     const std::string shown = mask ? std::string(this->text.size(), '*') : this->text;
 
     if (shown.empty()) {
@@ -179,8 +176,7 @@ Element LineEdit::render(const Theme& theme, const std::string& placeholder, boo
     Elements parts;
     parts.push_back(ftxui::text(before) | color(toFtx(theme.fg)));
     if (focused) {
-        // Draw the cursor as a block over the character it sits on, which is
-        // where the eye expects it in a terminal.
+        // Draw the cursor as a block over the character it sits on.
         std::size_t width = 1;
         if (!after.empty()) {
             const unsigned char lead = static_cast<unsigned char>(after[0]);
@@ -204,8 +200,6 @@ std::string elidePath(const std::string& path, int width) {
     if (displayWidth(path) <= width) return path;
     if (width <= 2) return "…";
 
-    // Drop whole components from the front while it is still too long, then
-    // fall back to cutting mid-component if even the last one does not fit.
     std::size_t at = 0;
     while (at < path.size()) {
         const std::size_t slash = path.find('/', at + 1);
@@ -241,8 +235,7 @@ Element panel(const std::string& title,
         header.push_back(text(" " + rightLabel + " ") | color(toFtx(theme.muted)));
     }
 
-    // With the title bar off, those rows must not exist at all: emitting empty
-    // text() elements would leave two blank lines where the title used to be.
+    // Empty text() elements would leave two blank rows where the title was.
     Elements rows;
     if (decoration.titleBar) {
         rows.push_back(hbox(std::move(header)));
@@ -294,17 +287,11 @@ Element highlighted(const std::string& value,
 
 Element modal(Element content, const Theme& theme, const DecorationSettings& decoration,
               int width, int height) {
-    // clear_under wipes whatever is beneath before drawing. Without it the
-    // panes show through wherever the modal has a filler rather than text, and
-    // their borders cut across it.
     Element framed = clear_under(std::move(content) | bgcolor(toFtx(theme.surface))) |
                      borderStyled(borderStyle(decoration.border), toFtx(theme.accent));
     if (width > 0) framed = std::move(framed) | size(WIDTH, EQUAL, width);
     if (height > 0) framed = std::move(framed) | size(HEIGHT, LESS_THAN, height);
 
-    // A one cell ring of cleared space around the frame. FTXUI merges adjacent
-    // box-drawing characters, so without the gap the modal's border fuses with
-    // the pane borders behind it and reads as part of the layout.
     Element ringed = clear_under(vbox({
         text(""),
         hbox({text(" "), std::move(framed), text(" ")}),

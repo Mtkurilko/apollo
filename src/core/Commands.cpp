@@ -57,7 +57,6 @@ std::optional<int> score(const std::string& haystack,
         at = found + 1;
     }
 
-    // Prefer short names: "run" should beat "run-everything" for query "run".
     total -= static_cast<int>(haystack.size() - needle.size()) / 4;
     return total;
 }
@@ -105,9 +104,6 @@ bool CommandRegistry::addDeclared(const std::string& name,
 
 namespace {
 
-// A script can describe itself: the first comment line after the shebang
-// becomes the description in `apollo commands` and in the palette. It costs
-// the author one line and saves everyone else from guessing.
 std::string describeScript(const fs::path& script) {
     std::ifstream in(script);
     std::string line;
@@ -132,7 +128,6 @@ int CommandRegistry::scanDirectory(const fs::path& dir) {
     std::error_code ec;
     if (!fs::is_directory(dir, ec)) return 0;
 
-    // Sorted, so the same directory always produces the same table.
     std::vector<fs::path> found;
     for (const auto& entry : fs::directory_iterator(dir, ec)) {
         if (ec) break;
@@ -145,8 +140,6 @@ int CommandRegistry::scanDirectory(const fs::path& dir) {
 
     int added = 0;
     for (const auto& script : found) {
-        // `deploy.sh` registers as `deploy`; the extension is an implementation
-        // detail of the file, not part of the command's name.
         const std::string name = script.stem().string();
         if (find(name)) continue;
 

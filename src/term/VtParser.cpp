@@ -10,8 +10,6 @@ namespace {
 constexpr std::size_t kMaxParams = 32;
 constexpr std::size_t kMaxOsc = 8192;
 
-// DEC special graphics: what `ESC ( 0` turns 0x5F-0x7E into. Programs that
-// draw boxes without Unicode rely on this.
 char32_t decGraphic(char32_t cp) {
     static const char32_t table[] = {
         0x00A0, 0x25C6, 0x2592, 0x2409, 0x240C, 0x240D, 0x240A, 0x00B0,
@@ -23,8 +21,7 @@ char32_t decGraphic(char32_t cp) {
     return table[cp - 0x5F];
 }
 
-// The xterm 256 colour cube, for programs that ask for an index but where the
-// theme has no opinion beyond the first sixteen.
+// The xterm 256 colour cube, for indices past the theme's first sixteen.
 void indexedToRgb(int index, int& r, int& g, int& b) {
     if (index < 16) { r = g = b = 0; return; }
     if (index < 232) {
@@ -104,7 +101,6 @@ void VtParser::consume(unsigned char byte) {
         case State::OscString:          oscByte(byte); break;
         case State::DcsIgnore:
         case State::StringIgnore:
-            // Consume until ST. ESC handling below spots the terminator.
             if (byte == 0x1B) state_ = State::Escape;
             else if (byte == 0x07) state_ = State::Ground;
             break;
@@ -142,8 +138,6 @@ void VtParser::groundByte(unsigned char byte) {
     // UTF-8.
     if (utf8Remaining_ > 0) {
         if ((byte & 0xC0) != 0x80) {
-            // A malformed sequence. Emit the replacement character rather than
-            // silently dropping bytes, and reconsider this one from scratch.
             utf8Remaining_ = 0;
             screen_.put(0xFFFD);
             groundByte(byte);
@@ -199,7 +193,6 @@ void VtParser::escapeByte(unsigned char byte) {
 }
 
 void VtParser::dispatchEscape(unsigned char final) {
-    // Character set designation: ESC ( B, ESC ) 0, and so on.
     if (!intermediates_.empty()) {
         const char which = intermediates_[0];
         if (which == '(' || which == ')' || which == '*' || which == '+') {
@@ -245,10 +238,7 @@ void VtParser::csiByte(unsigned char byte) {
         return;
     }
     if (byte == ';' || byte == ':') {
-        // A colon separates the sub-parameters of one parameter (24 bit SGR
-        // uses them); treating both alike is what most terminals do.
-        // A separator with no digits before it means an omitted parameter,
-        // which is not the same as a zero: `CSI ;5H` means row 1, column 5.
+        // A colon separates sub-parameters (24 bit SGR); most terminals treat both alike.
         if (!paramPending_) params_.push_back(-1);
         paramPending_ = false;
         if (params_.size() > kMaxParams) { state_ = State::CsiIgnore; return; }
@@ -450,7 +440,6 @@ void VtParser::applySgr() {
 void VtParser::oscByte(unsigned char byte) {
     if (byte == 0x07) { dispatchOsc(); state_ = State::Ground; return; }
     if (byte == 0x1B) {
-        // ESC \ terminates it; the escape state sees the backslash next.
         dispatchOsc();
         state_ = State::Escape;
         intermediates_.clear();
@@ -473,8 +462,6 @@ void VtParser::dispatchOsc() {
     }
 
     if (code == "7") {
-        // file://host/path — the shell telling us where it is. This is what
-        // keeps the file browser in step with the terminal.
         std::string path = rest;
         if (path.rfind("file://", 0) == 0) {
             const auto slash = path.find('/', 7);
@@ -485,8 +472,7 @@ void VtParser::dispatchOsc() {
     }
 
     if (code == "52") {
-        // Clipboard. The payload is "<selection>;<base64>"; the UI decides
-        // whether to trust it.
+        // Clipboard.
         const auto split = rest.find(';');
         if (split != std::string::npos && onClipboard) onClipboard(rest.substr(split + 1));
         return;

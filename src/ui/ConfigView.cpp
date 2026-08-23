@@ -12,7 +12,6 @@ using namespace ftxui;
 namespace {
 
 std::string prettyLabel(const std::string& path) {
-    // A few names do not survive being title-cased mechanically.
     static const std::map<std::string, std::string> overrides = {
         {"general.follow_cwd", "Follow the shell"},
         {"general.default_connection", "Default destination"},
@@ -56,7 +55,6 @@ std::vector<ConfigView::Page> ConfigView::pages() const {
     std::vector<Page> list = {Page::General,  Page::Appearance,  Page::Terminal,
                               Page::Browser,  Page::Keys,        Page::Commands,
                               Page::Connections};
-    // The problems tab only exists when there is something to say.
     if (!config_.issues().empty()) list.push_back(Page::Problems);
     list.push_back(Page::About);
     return list;
@@ -91,8 +89,7 @@ std::vector<const Config::Setting*> ConfigView::settingsFor(Page page) const {
     for (const auto& setting : Config::schema()) {
         if (setting.path.rfind(prefix, 0) == 0) found.push_back(&setting);
     }
-    // Colour overrides live with the rest of the appearance settings, which is
-    // where anyone would look for them.
+    // Colour overrides sit with the rest of the appearance settings.
     if (page == Page::Appearance) {
         for (const auto& setting : Config::schema()) {
             if (setting.path.rfind("colors.", 0) == 0) found.push_back(&setting);
@@ -180,8 +177,6 @@ void ConfigView::cycleChoice(int direction) {
         applyChange(setting.path, std::to_string(std::clamp(value + direction, setting.min, setting.max)));
         return;
     }
-    // Themes can also be files the user wrote, so the list is asked for rather
-    // than taken from the schema.
     const std::vector<std::string> choices = setting.path == "decoration.theme"
                                                  ? Config::availableThemes()
                                                  : setting.choices;
@@ -245,7 +240,6 @@ void ConfigView::remove() {
         return;
     }
 
-    // On a settings page, delete means "back to the default".
     const auto settings = settingsFor(page);
     if (row_ < 0 || row_ >= static_cast<int>(settings.size())) return;
     const Config::Setting& setting = *settings[static_cast<std::size_t>(row_)];
@@ -395,8 +389,6 @@ bool ConfigView::onKey(const KeyChord& chord, const std::string& raw) {
         return true;
     }
     if (chord.key == "e") {
-        // Hand the whole file to the user's editor, for anything this screen
-        // does not cover.
         if (!onEditExternally) return true;
         close();
         onEditExternally();
@@ -409,7 +401,6 @@ bool ConfigView::onKey(const KeyChord& chord, const std::string& raw) {
 
 Element ConfigView::renderSettings(Page page, const Theme& theme, int width, int height) {
     const auto settings = settingsFor(page);
-    // Three rows go to the separator and the two line explanation below.
     const int visible = std::max(3, height - 3);
 
     if (row_ < scroll_) scroll_ = row_;
@@ -445,8 +436,6 @@ Element ConfigView::renderSettings(Page page, const Theme& theme, int width, int
                     color(current.empty() ? toFtx(theme.muted) : toFtx(theme.fg)),
             });
         } else {
-            // Elided, or a long path squeezes the label into initials and
-            // shoves the "changed" marker off the end.
             const std::string shown =
                 current.empty() ? "(unset)" : elide(current, std::max(8, width - labelWidth - 10));
             value = text(shown) | color(current.empty() ? toFtx(theme.muted) : toFtx(theme.fg));
@@ -466,7 +455,6 @@ Element ConfigView::renderSettings(Page page, const Theme& theme, int width, int
     }
     while (static_cast<int>(rows.size()) < visible) rows.push_back(text(""));
 
-    // What the highlighted setting is for, spelled out under the list.
     Element explanation = text("");
     if (row_ >= 0 && row_ < static_cast<int>(settings.size())) {
         const Config::Setting& setting = *settings[static_cast<std::size_t>(row_)];
@@ -743,8 +731,7 @@ Element ConfigView::render(const Theme& theme, const DecorationSettings& decorat
     Element content = vbox({
         hbox({
             text(" apollo config ") | bold | color(toFtx(theme.accent)),
-            // The file every one of these pages writes to, so it is never a
-            // mystery where a change went.
+            // The file all of these pages write to.
             text(elide(paths::contractUser(config_.path()), std::max(0, panelWidth - 26))) |
                 color(toFtx(theme.muted)),
             filler(),

@@ -56,8 +56,6 @@ bool Pty::start(const Launch& launch, int rows, int cols, std::string* error) {
     size.ws_row = static_cast<unsigned short>(rows_);
     size.ws_col = static_cast<unsigned short>(cols_);
 
-    // Sensible line discipline: the child is free to change any of it, and
-    // most shells immediately do.
     termios settings{};
     settings.c_iflag = ICRNL | IXON | IUTF8 | BRKINT;
     settings.c_oflag = OPOST | ONLCR;
@@ -80,7 +78,6 @@ bool Pty::start(const Launch& launch, int rows, int cols, std::string* error) {
     }
 
     if (child == 0) {
-        // Child. Only async-signal-safe work between here and exec.
         if (!launch.cwd.empty()) {
             if (::chdir(launch.cwd.c_str()) != 0) { /* start in $HOME instead */ }
         }
@@ -99,8 +96,7 @@ bool Pty::start(const Launch& launch, int rows, int cols, std::string* error) {
         for (const auto& arg : launch.argv) argv.push_back(const_cast<char*>(arg.c_str()));
         argv.push_back(nullptr);
 
-        // macOS has no execvpe; replacing environ before execvp is the
-        // portable equivalent and is safe in a just-forked child.
+        // macOS has no execvpe; replacing environ before execvp is the equivalent.
         environ = envp.data();
         ::execvp(argv[0], argv.data());
         ::_exit(127);
@@ -111,8 +107,7 @@ bool Pty::start(const Launch& launch, int rows, int cols, std::string* error) {
     exited_ = false;
     exitCode_ = 0;
 
-    // Non-blocking: the UI thread drains whatever has arrived each frame and
-    // never waits on the child.
+    // Non-blocking: the UI thread drains each frame and never waits on the child.
     const int flags = ::fcntl(fd_, F_GETFL, 0);
     ::fcntl(fd_, F_SETFL, (flags < 0 ? 0 : flags) | O_NONBLOCK);
     ::fcntl(fd_, F_SETFD, FD_CLOEXEC);
@@ -128,8 +123,6 @@ void Pty::resize(int rows, int cols) {
     size.ws_row = static_cast<unsigned short>(rows_);
     size.ws_col = static_cast<unsigned short>(cols_);
     ::ioctl(fd_, TIOCSWINSZ, &size);
-    // SIGWINCH goes to the foreground process group on its own; full screen
-    // programs redraw themselves from here.
 }
 
 std::ptrdiff_t Pty::read(char* buffer, std::size_t size) {
@@ -151,8 +144,6 @@ bool Pty::write(std::string_view bytes) {
         if (wrote > 0) { sent += static_cast<std::size_t>(wrote); continue; }
         if (wrote < 0 && (errno == EINTR)) continue;
         if (wrote < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            // The child is not reading. Wait briefly rather than spinning; a
-            // paste larger than the pty buffer lands here.
             ::usleep(500);
             continue;
         }

@@ -18,9 +18,6 @@ bool isIdentChar(char c) {
     return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
 }
 
-// `#` is a comment marker at the start of a line, or when it stands alone
-// between spaces. Anywhere else it is part of a value, which is what makes
-// `accent = #7aa2f7` work without quoting.
 std::string stripComment(const std::string& line) {
     for (std::size_t i = 0; i < line.size(); ++i) {
         if (line[i] == '/' && i + 1 < line.size() && line[i + 1] == '/') {
@@ -42,7 +39,6 @@ std::string stripComment(const std::string& line) {
     return line;
 }
 
-// Index of the comment marker in a line, or npos. Mirrors stripComment.
 std::size_t commentStart(const std::string& line) {
     const std::string stripped = stripComment(line);
     return stripped.size() == line.size() ? std::string::npos : stripped.size();
@@ -89,9 +85,6 @@ const ConfigNode* ConfigNode::child(const std::string& childName,
 }
 
 const ConfigEntry* ConfigNode::entry(const std::string& key) const {
-    // The last one wins, which is what a reader expects when a key appears
-    // twice, and what makes `source` predictable: sourced entries are placed
-    // ahead of the file's own, so your own file always has the last word.
     const ConfigEntry* found = nullptr;
     for (const auto& e : entries) {
         if (e.key == key) found = &e;
@@ -269,11 +262,7 @@ void ConfigFile::reparse() {
             if (!nested.load(included)) {
                 for (const auto& d : nested.diagnostics()) diags_.push_back(d);
             }
-            // Sourced entries carry line -1: they live in another file, and
-            // `apollo config set` must never try to rewrite them there. They
-            // are placed *ahead* of whatever this file says, so a sourced file
-            // supplies defaults and the file doing the sourcing overrides them,
-            // wherever in the file the `source` line happens to sit.
+            // Sourced entries carry line -1: set() must never rewrite another file.
             const auto adopt = [](auto&& self, ConfigNode& into, const ConfigNode& from) -> void {
                 std::vector<ConfigEntry> incoming;
                 for (const auto& e : from.entries) {
@@ -284,8 +273,7 @@ void ConfigFile::reparse() {
                 into.entries.insert(into.entries.begin(), incoming.begin(), incoming.end());
 
                 for (const auto& c : from.children) {
-                    // Merge into a section of the same name rather than adding
-                    // a second one, or lookups would only ever see the first.
+                    // Merge into a section of the same name, or lookups only ever see the first.
                     ConfigNode* existing = nullptr;
                     for (auto& candidate : into.children) {
                         if (candidate.name == c.name && candidate.label == c.label) {
@@ -339,8 +327,7 @@ bool ConfigFile::save(const fs::path& path, std::string* error) const {
     std::error_code ec;
     if (path.has_parent_path() && !paths::ensureDir(path.parent_path(), error)) return false;
 
-    // Write beside the target and rename: an interrupted save can never leave
-    // a half-written config behind.
+    // Write beside the target and rename, so an interrupted save cannot truncate.
     const fs::path temp = path.string() + ".tmp";
     {
         std::ofstream out(temp, std::ios::trunc);
@@ -391,8 +378,7 @@ bool ConfigFile::resolve(const std::string& path,
 
 namespace {
 
-// Walks a dotted path, accepting both `connection lab { }` and
-// `connection { lab { } }` for the same "connection.lab".
+// Accepts both `connection lab { }` and `connection { lab { } }`.
 const ConfigNode* descend(const ConfigNode* node,
                           const std::vector<std::string>& path,
                           std::size_t index) {
@@ -465,15 +451,12 @@ ConfigNode* ConfigFile::findSection(const std::string& path, bool create) {
     if (!resolve(path, parts, last)) return nullptr;
     parts.push_back(last);
 
-    // Const-walk first; the tree is rebuilt from text after any insertion, so
-    // holding a mutable pointer across an edit would be wrong anyway.
+    // The tree is rebuilt from text after any insertion, so const-walk first.
     const ConfigNode* existing = descend(&root_, parts, 0);
     if (existing) return const_cast<ConfigNode*>(existing);
     if (!create) return nullptr;
 
-    // Create the missing block at the end of the file. Labelled blocks are
-    // written as `connection lab { }`; Apollo has no deeper sections, and
-    // silently inventing the wrong shape would be worse than refusing.
+    // Create the missing block at the end of the file.
     std::string header;
     if (parts.size() == 1) header = parts[0];
     else if (parts.size() == 2) header = parts[0] + " " + parts[1];
@@ -503,8 +486,6 @@ void ConfigFile::set(const std::string& path, const std::string& value) {
 
     const ConfigEntry* existing = node->entry(key);
     if (existing && existing->line >= 0) {
-        // Rewrite just the value, keeping the key spelling, the indentation and
-        // any trailing comment the user wrote.
         std::string& line = lines_[existing->line];
         const std::size_t eq = findAssign(line);
         if (eq != std::string::npos) {
@@ -522,9 +503,7 @@ void ConfigFile::set(const std::string& path, const std::string& value) {
         }
     }
 
-    // New key: place it just before the section's closing brace, lined up with
-    // whatever the neighbours do. A settings screen that writes a ragged line
-    // into a hand-aligned file is a small betrayal.
+    // Insert before the closing brace, aligned with the neighbours.
     const int at = node->closeLine >= 0 ? node->closeLine
                                         : static_cast<int>(lines_.size());
     const std::string indent = node == &root_
@@ -539,7 +518,6 @@ void ConfigFile::set(const std::string& path, const std::string& value) {
     }
 
     std::string spelled = indent + key;
-    // One space is added below, so pad to the column before the '='.
     if (column > 0 && column - 1 > spelled.size()) {
         spelled.append(column - 1 - spelled.size(), ' ');
     }
@@ -582,7 +560,6 @@ bool ConfigFile::removeSection(const std::string& path) {
 }
 
 void ConfigFile::append(const std::string& key, const std::string& value) {
-    // Group repeated keys together: put it after the last one if any exist.
     int at = -1;
     for (const auto& e : root_.entries) {
         if (e.key == key && e.line > at) at = e.line;

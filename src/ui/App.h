@@ -1,5 +1,4 @@
-// The application: layout, focus, keys, tabs, and everything the panes and
-// overlays hang off.
+// The application: layout, focus, keys, tabs, overlays.
 #pragma once
 
 #include <chrono>
@@ -47,8 +46,6 @@ private:
         int terminalRows = 20, terminalCols = 80;
         int browserRows = 20;
         bool stacked = false;
-        // What the chrome looks like after the layout has had its say: a window
-        // with no room for a border does not get one.
         DecorationSettings decoration;
     };
     Layout measure() const;
@@ -64,10 +61,8 @@ private:
     // --- events -----------------------------------------------------------
     bool onEvent(const ftxui::Event& event);
     bool onMouse(const ftxui::Event& event);
-    // A message from `apollo ...` typed in one of Apollo's own terminals.
     void handleControl(const std::string& message);
-    // The first column of the grab zone between the panes, or -1 when the
-    // panes are not side by side.
+    // First column of the grab zone, or -1 when the panes are not side by side.
     int dividerColumn(const Layout& layout) const;
     bool runBind(const KeyChord& chord);
     void act(const std::string& action, const std::vector<std::string>& args);
@@ -79,7 +74,6 @@ private:
     ftxui::Element render();
     ftxui::Element renderStatusBar(const Layout& layout);
     ftxui::Element renderTabs();
-    // Where each tab's label sits along the top row, so a click can find it.
     std::vector<int> tabEdges() const;
     ftxui::Element renderHelp(int width, int height);
     ftxui::Element renderSearch();
@@ -109,23 +103,16 @@ private:
     Boot boot_;
     ControlServer control_;
 
-    // While the divider is being dragged the width is held here rather than
-    // written to the config on every mouse event; it is saved on release.
     int dragWidth_ = -1;
     bool draggingDivider_ = false;
 
-    // Where Apollo has just told the shell to go. Until the shell says it has
-    // arrived, its reports are stale and following them would drag the browser
-    // back to where it came from.
     std::filesystem::path pendingCwd_;
     std::chrono::steady_clock::time_point pendingCwdUntil_{};
 
-    // The pane arrangement lives in the config and nowhere else, so a key that
-    // changes it and the file that describes it can never disagree.
+    // The arrangement lives in the config, so a key and the file cannot disagree.
     bool browserVisible() const;
     bool stacked() const;
     int browserWidth() const;
-    // Writes a setting and saves, reporting rather than swallowing a failure.
     bool put(const std::string& path, const std::string& value);
 
     bool leaderArmed_ = false;

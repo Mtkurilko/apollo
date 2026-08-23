@@ -1,7 +1,6 @@
 # Apollo
 
-A terminal workspace: a file browser and a real terminal, side by side, in one
-window that is entirely yours to configure.
+A file browser and a real terminal side by side, in one configurable window.
 
 ```
 ╭────────────────────────────────────────────╮ ╭───────────────────────────────────────────╮
@@ -9,9 +8,9 @@ window that is entirely yours to configure.
 ├────────────────────────────────────────────┤ ├───────────────────────────────────────────┤
 │ ←  →  ↑ …/apollo_project         name ↓  / │ │# Apollo                                   │
 │ ▸ build/                                   │ │                                           │
-│ ▸ scripts/                        M        │ │A terminal workspace: a file browser and a │
-│ ▸ src/                            ?        │ │real terminal, side by side, in one        │
-│ ▸ tests/                          M        │ │window that is entirely yours to configure.│
+│ ▸ scripts/                        M        │ │A file browser and a real terminal side by │
+│ ▸ src/                            ?        │ │side, in one configurable window.          │
+│ ▸ tests/                          M        │ │                                           │
 │ ◇ apollo.properties                   167B │ │~                                          │
 │ ≡ CMakeLists.txt                  M   3.9K │ │"README.md" 322L, 11838B                   │
 ├────────────────────────────────────────────┤ │                                           │
@@ -21,12 +20,11 @@ window that is entirely yours to configure.
  local  ~/Apollo/apollo_project              Leader Space commands · F1 keys · Leader , config
 ```
 
-The terminal is a real terminal — a pty and a full escape sequence parser — so
-`vim`, `htop`, `less`, `git add -p` and anything else behave exactly as they do
-in the terminal you are reading this in. Apollo adds panes, tabs, a command
-palette, a searchable scrollback and SSH destinations around it, and then gets
-out of the way: **every key it takes for itself is behind a leader key**, so
-Ctrl-A, Ctrl-C, Ctrl-K and Ctrl-R still belong to your shell.
+The terminal is a pty with a full escape sequence parser, so `vim`, `htop`,
+`less` and `git add -p` work normally. Apollo adds panes, tabs, a command
+palette, scrollback search and SSH destinations around it. Every key it takes
+is behind a leader key, so Ctrl-A, Ctrl-C, Ctrl-K and Ctrl-R still go to your
+shell.
 
 ## Install
 
@@ -34,26 +32,18 @@ Ctrl-A, Ctrl-C, Ctrl-K and Ctrl-R still belong to your shell.
 ./install.sh
 ```
 
-That needs a C++17 compiler, CMake and git, and nothing else — FTXUI is fetched
-and linked into the binary, so there is no library to install and no package
-version to drift out from under you. To install somewhere that needs no
-password:
+Needs a C++17 compiler, CMake and git. FTXUI is fetched and linked into the
+binary, so there is no library to install. To install without sudo:
 
 ```bash
 PREFIX=~/.local ./install.sh
 ```
 
-Then, from anywhere:
+Then run `apollo` from anywhere. The first run asks where to open, which theme,
+an optional SSH destination, and whether to install shell integration, then
+writes a commented `~/.apollo/apollo.conf`. All of it can be changed later.
 
-```bash
-apollo
-```
-
-The first run walks through a short wizard — where to open, which theme, an
-optional SSH destination, and whether to install shell integration. It writes a
-commented `~/.apollo/apollo.conf` and everything it asks can be changed later.
-
-## Using it
+## Commands
 
 | | |
 | --- | --- |
@@ -68,16 +58,15 @@ commented `~/.apollo/apollo.conf` and everything it asks can be changed later.
 | `apollo <command>` | Run one of them |
 | `apollo completions zsh` | Shell completion |
 
-### Keys
+## Keys
 
-Apollo's own keys live behind a **leader**, `Ctrl+Space` by default: press it,
-let go, then press the key. Everything not listed here goes straight to the
-program running in the terminal.
+Apollo's keys are behind a leader, `Ctrl+Space` by default: press it, let go,
+then press the key. Anything not listed goes to the program in the terminal.
 
 | Key | |
 | --- | --- |
-| `Leader Space` | The command palette — everything Apollo can do, fuzzy searched |
-| `Leader ,` | The settings editor |
+| `Leader Space` | Command palette, fuzzy searched |
+| `Leader ,` | Settings editor |
 | `Leader B` / `E` / `T` | Toggle the browser, focus it, focus the terminal |
 | `Leader C` / `X` / `N` / `O` | New tab, close tab, next, previous |
 | `Leader /` | Search the scrollback |
@@ -87,68 +76,62 @@ program running in the terminal.
 | `Leader U` / `[` / `]` | Up a directory, back, forward |
 | `Leader Y` / `V` | Copy the current path, go to the one on the clipboard |
 | `Shift+PgUp` / `PgDn` | Scroll back |
-| `F1` | The full key reference |
-| `F10` | Leave Apollo |
+| `F1` | Full key reference |
+| `F10` | Quit |
 
-Drag to select, and the selection is copied. The wheel scrolls. Double click
-opens. Click a tab to switch to it. Every one of these is a line in the config,
-and `unbind` removes any of them.
+Drag to select and the selection is copied. The wheel scrolls, double click
+opens, click a tab to switch. Every key is a line in the config, and `unbind`
+removes any of them.
 
-The keys that rearrange the panes — show the browser, stack it, resize it, show
-dotfiles — write to the config as they go, so what you set up with your hands
-is what you get back next time.
+Keys that rearrange the panes — show the browser, stack it, resize it, show
+dotfiles — write to the config as they go, so the layout comes back next time.
 
 ## The browser
 
-The pane is a file manager, not a list. Drag the divider between the panes to
-resize it, and where it lands is where it stays. Its toolbar has back, forward
-and up, the path — click it to copy — the current sort, and the filter.
+Drag the divider to resize the pane; where it lands is where it stays. The
+toolbar has back, forward and up, the path (click to copy), the sort and the
+filter.
 
-Two ways to find something, because they are two different jobs:
+Two ways to find something:
 
-- **Type a name.** Letters move the selection to the first match, and keep
+- **Type a name.** Letters move the selection to the first match and keep
   moving it as you type. A pause starts a new search.
-- **Press `/`.** That narrows the list instead, fuzzily, and the status bar
-  says how much of the directory survived.
+- **Press `/`.** Narrows the list, fuzzily. The status bar says how many
+  entries are left.
 
-What it shows depends on how much room you give it. Narrow, it is names. Wider,
-sizes and git status. Wider still, dates and a mark on the pane. Files are
-coloured and marked by what they are — directories, code, documents, data,
-images, archives, media — and the line underneath describes whatever is
-selected: permissions, size, when it changed.
+The columns depend on the width: names when narrow, then sizes and git status,
+then dates. Files are coloured and marked by type, and the line underneath
+shows permissions, size and mtime for whatever is selected.
 
-`browser.sort` cycles through name, size, modified and type; `browser.sort_reverse`
-turns any of them round. Both are on the toolbar, in the palette, and in the
-config.
+`browser.sort` cycles name, size, modified and type; `browser.sort_reverse`
+flips it. Both are on the toolbar, in the palette and in the config.
 
-## Apollo from inside Apollo
+## Apollo inside Apollo
 
-Running `apollo` in Apollo's own terminal used to start a second Apollo nested
-in the first. It now talks to the one already there, over a private socket that
-each instance creates for the shells it starts:
+Running `apollo` in Apollo's own terminal talks to the instance that is already
+there, over a socket each instance creates for the shells it starts:
 
 | | |
 | --- | --- |
 | `apollo` | Back to the workspace, both panes |
 | `apollo <directory>` | Take both panes there |
-| `apollo quit` | Leave |
+| `apollo quit` | Quit |
 | `apollo config` | Open the settings |
 | `apollo new-tab` | Another terminal tab |
 | `apollo connect lab` | Another tab, connected |
 
 Everything else — `apollo doctor`, `apollo config list`, your own commands —
-prints in the terminal where you typed it, as it should.
+prints in the terminal where you typed it.
 
-The socket lives in `/tmp`, is named for your user and the process, and is
-created readable by nobody else. Sockets left behind by an instance that was
-killed rather than closed are swept up the next time Apollo starts.
+The socket lives in `/tmp`, is named for your user and pid, and is owner-only.
+Sockets left behind by a killed instance are swept on the next start.
 
-## Configuring it
+## Config
 
-Everything lives in `~/.apollo/apollo.conf`, in a small sectioned language with
-variables, comments and live reload. Save the file and the running Apollo
-restyles itself; `apollo config` edits the same file **in place**, leaving your
-comments, blank lines and alignment exactly where you put them.
+Everything is in `~/.apollo/apollo.conf`: a sectioned language with variables,
+comments and live reload. Save the file and the running Apollo restyles itself.
+`apollo config` edits the same file in place and leaves comments, blank lines
+and alignment where they are.
 
 ```conf
 $accent = #7aa2f7
@@ -163,7 +146,7 @@ decoration {
     border  = rounded
     gaps    = 1
     animate = true
-    boot    = true             # the splash on the way in; false skips it
+    boot    = true             # splash on startup
 }
 
 colors {
@@ -184,15 +167,14 @@ unbind = LEADER, Q
 source = ~/.apollo/themes/shared.conf
 ```
 
-A sourced file supplies defaults; anything your own file sets overrides it,
-wherever in the file the `source` line happens to sit. `apollo config set`
-always writes your file, so it always takes effect.
+A sourced file supplies defaults; your own file overrides them wherever the
+`source` line sits. `apollo config set` always writes your file.
 
 ### Themes
 
-Seven are built in: `apollo`, `midnight`, `nord`, `gruvbox`, `catppuccin`,
-`solarized` and `paper`. Your own is a file in `~/.apollo/themes` — a base to
-start from and whatever you want to change:
+Seven built in: `apollo`, `midnight`, `nord`, `gruvbox`, `catppuccin`,
+`solarized`, `paper`. Your own is a file in `~/.apollo/themes` — a base plus
+whatever you change:
 
 ```conf
 # ~/.apollo/themes/sunset.conf
@@ -209,13 +191,13 @@ colors {
 apollo config set decoration.theme sunset
 ```
 
-It appears in the command palette and in the settings editor alongside the
-built-in ones. Colours are `#rrggbb`, `#rgb`, `rgb(r, g, b)` or a name, and the
-sixteen ANSI colours the terminal hands to programs are derived from the same
-palette, so `ls` and `git diff` belong to the same picture as the chrome.
+It shows up in the palette and the settings editor next to the built-in ones.
+Colours are `#rrggbb`, `#rgb`, `rgb(r, g, b)` or a name. The sixteen ANSI
+colours handed to programs are derived from the same palette, so `ls` and
+`git diff` match the rest of the window.
 
-`apollo config` on its own opens an editor with every setting, what it does,
-what it accepts and what the default was:
+`apollo config` with no arguments opens an editor with every setting, what it
+does, what it accepts and its default:
 
 ```
 ╭────────────────────────────────────────────────────────────────────────────╮
@@ -237,8 +219,7 @@ what it accepts and what the default was:
 ╰────────────────────────────────────────────────────────────────────────────╯
 ```
 
-A dot marks anything you have changed from the default; the line underneath is
-what the highlighted setting does, what it accepts, and where it came from.
+A dot marks anything changed from the default.
 
 Or from the shell:
 
@@ -247,13 +228,12 @@ apollo config list
 apollo config set decoration.theme gruvbox
 apollo config unset browser.width
 apollo config binds
-apollo config check          # exits non-zero if anything is wrong; good in CI
+apollo config check          # exits non-zero if anything is wrong
 ```
 
-An unknown key, a value outside its range, a bind naming an action that does
-not exist — all of them are reported rather than ignored, in `apollo doctor`,
-in `apollo config check`, and on a Problems tab that appears in the editor only
-when there is something to say.
+Unknown keys, out-of-range values and binds naming an action that does not
+exist are reported in `apollo doctor`, in `apollo config check`, and on a
+Problems tab that only appears when there is something wrong.
 
 ### Completion
 
@@ -262,24 +242,24 @@ apollo completions zsh > "${fpath[1]}/_apollo"     # or
 apollo completions bash > ~/.local/share/bash-completion/completions/apollo
 ```
 
-The script is four lines that ask Apollo what could come next, so completion
-covers every setting name, the values each one accepts, your themes, your SSH
-destinations and your own commands — and cannot fall behind them.
+The script asks Apollo what could come next, so completion covers setting
+names, their values, your themes, your SSH destinations and your own commands
+without going stale.
 
 ## Adding commands
 
-Two ways, both of which show up immediately in `apollo <name>`, in the command
-palette, and as something a key can be bound to.
+Both ways show up in `apollo <name>`, in the palette, and as something a key
+can be bound to.
 
-**In the config:**
+In the config:
 
 ```conf
 command = deploy, ./scripts/deploy.sh, "Ship the current branch"
 bind    = LEADER, D, run, deploy
 ```
 
-**As a file.** Anything executable in `~/.apollo/commands` is a command, with
-no configuration at all. Its first comment line becomes its description:
+Or as a file — anything executable in `~/.apollo/commands`, no configuration
+needed. Its first comment line becomes the description:
 
 ```bash
 cat > ~/.apollo/commands/tidy <<'EOF'
@@ -295,12 +275,11 @@ $ apollo commands
   tidy            Remove build output and stray editor files   ~/.apollo/commands/tidy
 ```
 
-## SSH destinations
+## SSH
 
-`apollo connect` spawns a real `ssh` inside the terminal's pty, so a remote
-session is exactly as complete as one you would start yourself — full screen
-programs, signals, colours and all. Connections are multiplexed over a shared
-control socket, so the second one costs a round trip rather than a handshake.
+`apollo connect` spawns a real `ssh` inside the pty, so a remote session is a
+normal one — full screen programs, signals, colours. Connections share a
+control socket, so the second one is a round trip rather than a handshake.
 
 ```bash
 apollo config add lab alice@10.0.0.5
@@ -320,46 +299,44 @@ connection lab {
 
 How `apollo connect` picks one:
 
-- **One destination configured** — it is used, no name needed.
-- **Several** — name one, `apollo connect lab`, unless `general.default_connection`
-  is set, in which case that one is used.
-- **A name you give always wins.**
+- One destination configured: it is used, no name needed.
+- Several: name one, `apollo connect lab`, unless `general.default_connection`
+  is set.
+- A name you give always wins.
 
-Prefer a key. A password has to be handed to `sshpass`; Apollo passes it in the
-environment rather than in `argv` so it does not show up in `ps`, but a key
-avoids the question entirely.
+Prefer a key. A password has to go through `sshpass`; Apollo passes it in the
+environment rather than `argv` so it stays out of `ps`, but a key avoids the
+question.
 
 ## Shell integration
 
-The wizard offers to add one line to your shell's startup file. It sources a
-snippet that emits OSC 7 and OSC 133 — standard sequences that report the
-working directory and mark where prompts begin. With it:
-
-- the file browser follows every `cd` you type;
-- `Leader ↑` and `Leader ↓` jump between the output of previous commands.
+The wizard offers to add one line to your shell startup file. It sources a
+snippet that emits OSC 7 and OSC 133, the sequences that report the working
+directory and mark where prompts begin. With it, the browser follows every `cd`
+you type, and `Leader ↑` / `Leader ↓` jump between previous commands' output.
 
 It is plain shell, harmless in any other terminal, and removed by deleting the
-line. Nothing else in Apollo depends on it.
+line. Nothing else depends on it.
 
-## How it is put together
+## Layout
 
 | | |
 | --- | --- |
-| `src/core/ConfigFile` | The config language: parser, variables, includes, and edits that keep your comments |
-| `src/core/Config` | The typed view, and the schema that drives validation, the editor and the CLI |
-| `src/core/Keys` | Key chords, the leader, and decoding what the terminal actually sends |
-| `src/core/Commands` | Built-ins, config commands, dropped-in scripts, and fuzzy matching |
+| `src/core/ConfigFile` | The config language: parser, variables, includes, edits that keep comments |
+| `src/core/Config` | The typed view, and the schema behind validation, the editor and the CLI |
+| `src/core/Keys` | Key chords, the leader, and decoding what the terminal sends |
+| `src/core/Commands` | Built-ins, config commands, dropped-in scripts, fuzzy matching |
 | `src/core/Process` | `posix_spawn` with argv arrays, so a filename is never a command |
 | `src/term/Pty` | `forkpty`, non-blocking reads, window size |
-| `src/term/Screen` | The cell grid: scrollback, alternate screen, scroll regions, reflow on resize |
+| `src/term/Screen` | The cell grid: scrollback, alternate screen, scroll regions, reflow |
 | `src/term/VtParser` | The DEC/ECMA-48 escape sequence state machine |
 | `src/term/Session` | One terminal, and the view state of looking at it |
 | `src/ui/*` | Panes, palette, settings editor, wizard |
-| `src/net/Ssh` | Destinations, multiplexing, and keeping secrets out of `argv` |
+| `src/net/Ssh` | Destinations, multiplexing, keeping secrets out of `argv` |
 
-Reading is split so the screen has exactly one writer and needs no locking: a
-small thread waits on the pty and does nothing but signal that bytes are ready,
-and the bytes are read and parsed on the UI thread.
+Reading is split so the screen has one writer and needs no locking: a thread
+waits on the pty and only signals that bytes are ready; the bytes are read and
+parsed on the UI thread.
 
 ## Developing
 
@@ -368,13 +345,12 @@ cmake -S . -B build && cmake --build build -j8
 ./build/apollo_tests
 ```
 
-The tests cover the parts with no screen attached — the config language, key
+The tests cover the parts with no screen attached: the config language, key
 decoding, the terminal grid, the escape parser, reflow, connection resolution
-and migration — which are exactly the parts that would be miserable to check by
-hand.
+and migration.
 
-For the parts that do have a screen, `scripts/drive.py` runs Apollo under a pty
-of a given size, sends it keystrokes, and prints what it painted:
+For the rest, `scripts/drive.py` runs Apollo under a pty of a given size, sends
+keystrokes, and prints what it painted:
 
 ```bash
 python3 scripts/drive.py --cols 96 --rows 24 '<leader>' '<space>' 'theme' -- .
@@ -382,7 +358,7 @@ python3 scripts/drive.py --cols 96 --rows 24 '<leader>' '<space>' 'theme' -- .
 
 ## Upgrading from 0.2
 
-The first run converts `~/.apollo/config.properties` into the new format and
+The first run converts `~/.apollo/config.properties` to the new format and
 leaves the old file alone. Connections, the workspace and the default
-destination all carry across. The 0.1 `apollo.properties`, which held a single
+destination carry across. The 0.1 `apollo.properties`, which held a single
 host, becomes the connection named `default`.

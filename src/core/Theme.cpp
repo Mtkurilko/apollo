@@ -37,8 +37,6 @@ const std::map<std::string, Rgb>& namedColors() {
 
 } // namespace
 
-// A sensible 16-colour ramp derived from a theme's own palette, so a theme only
-// has to name the handful of colours that matter.
 void Theme::rebuildRamp() {
     const Theme& t = *this;
     ansi = {{
@@ -155,7 +153,6 @@ std::optional<Theme> Theme::builtin(const std::string& name) {
     const std::string key = lower(name);
 
     if (key == "apollo") {
-        // The default: deep blue with a violet accent.
     } else if (key == "midnight") {
         t = Theme{};
         t.bg = {8, 9, 14};      t.surface = {14, 16, 24};  t.fg = {203, 211, 240};
@@ -190,7 +187,6 @@ std::optional<Theme> Theme::builtin(const std::string& name) {
         t.warning = {181, 137, 0};    t.error = {220, 50, 47};
         t.selection = {7, 54, 66};
     } else if (key == "paper") {
-        // The one light theme, for people who work in daylight.
         t = Theme{};
         t.bg = {250, 250, 248};  t.surface = {240, 240, 236}; t.fg = {40, 42, 54};
         t.muted = {130, 134, 150}; t.border = {214, 214, 208}; t.accent = {38, 108, 200};

@@ -20,9 +20,6 @@ Panes compute(const Request& request) {
     panes.statusBar = request.statusBar;
     panes.tabBar = request.tabBar;
 
-    // Shed decoration until the terminal has at least one row and one column
-    // to live in. Anything else claims space that does not exist, and the
-    // renderer resolves that by silently clipping.
     const auto frameV = [&] { return (panes.border ? 2 : 0) + (panes.titleBar ? 2 : 0); };
     const auto frameH = [&] { return panes.border ? 2 : 0; };
     const auto rowsLeft = [&] {
@@ -40,8 +37,7 @@ Panes compute(const Request& request) {
     const int available =
         std::max(1, height - (panes.statusBar ? 1 : 0) - (panes.tabBar ? 1 : 0));
     const int gaps = std::max(0, request.gaps);
-    // The browser is shown only if it can have a width worth having: the one
-    // that was asked for, or the usable minimum, whichever is smaller.
+    // Show the browser only if it can have the width asked for, or the usable minimum.
     const int floorWidth = std::min(std::max(1, request.browserWidth), kUsableBrowserCols);
     const int wantedBrowser =
         std::clamp(request.browserWidth, floorWidth, std::max(floorWidth, maxBrowserWidth(request)));
@@ -57,8 +53,7 @@ Panes compute(const Request& request) {
     }
 
     if (request.stacked) {
-        // A third of the height, but never so little that the browser is only
-        // chrome, and never so much that the terminal is.
+        // A third of the height, but never all chrome at either end.
         int browserHeight = std::clamp(available / 3, frameV() + 6, frameV() + 20);
         browserHeight = std::min(browserHeight, available - gaps - frameV() - kUsableRows);
         browserHeight = std::max(browserHeight, frameV() + 1);

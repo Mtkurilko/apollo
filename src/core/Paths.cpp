@@ -20,7 +20,6 @@ const char* envOrNull(const char* name) {
 
 fs::path home() {
     if (const char* h = envOrNull("HOME")) return h;
-    // HOME can be missing under launchd or a bare sudo; passwd always has it.
     if (const passwd* pw = getpwuid(getuid()); pw && pw->pw_dir) return pw->pw_dir;
     return fs::current_path();
 }
@@ -62,7 +61,7 @@ bool ensureDir(const fs::path& dir, std::string* error) {
         if (error) *error = "cannot create " + dir.string() + ": " + ec.message();
         return false;
     }
-    // The config can hold SSH passwords, so nobody else gets to look.
+    // The config can hold SSH passwords.
     fs::permissions(dir, fs::perms::owner_all, fs::perm_options::replace, ec);
     return true;
 }

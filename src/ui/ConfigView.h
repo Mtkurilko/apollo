@@ -1,9 +1,4 @@
-// `apollo config` with nothing after it.
-//
-// Every setting Apollo has, in one screen, each with what it does and what it
-// accepts. Changes are written to ~/.apollo/apollo.conf as they are made and
-// take effect immediately — switch the theme and the screen restyles under
-// you — and the file keeps its comments and layout throughout.
+// `apollo config` with no arguments. Writes apollo.conf as changes are made.
 #pragma once
 
 #include <functional>
@@ -31,11 +26,7 @@ public:
                           int width,
                           int height);
 
-    // Fired after anything is written, so the app can pick up a new theme or
-    // re-derive the command table.
     std::function<void()> onChanged;
-    // `e` hands the whole file to the user's editor; the app owns the terminal
-    // it has to run in.
     std::function<void()> onEditExternally;
 
 private:
@@ -83,7 +74,6 @@ private:
     std::string error_;
     std::string flash_;
 
-    // A short sequence of questions, used for adding a connection.
     struct Prompt {
         std::string title;
         std::vector<Field> fields;

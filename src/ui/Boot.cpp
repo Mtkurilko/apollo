@@ -10,8 +10,7 @@ using namespace ftxui;
 
 namespace {
 
-// Assembled letter by letter rather than written out as six long lines, so the
-// rows cannot drift out of alignment with each other.
+// Assembled per letter so the rows cannot drift out of alignment.
 const std::vector<std::string>& glyph(char letter) {
     static const std::vector<std::string> a = {
         " █████╗ ", "██╔══██╗", "███████║", "██╔══██║", "██║  ██║", "╚═╝  ╚═╝",
@@ -36,14 +35,12 @@ const std::vector<std::string>& glyph(char letter) {
     }
 }
 
-// Milestones, in milliseconds since the splash appeared.
 constexpr int kWipeDone = 420;
 constexpr int kLinesDone = 700;
 constexpr int kHoldDone = 900;
 constexpr int kStaticDone = 450; // when animation is off
 
-// Takes the first `columns` display columns of a row, so the reveal can wipe
-// across letters that are multi-byte.
+// First `columns` display columns, so the wipe crosses multi-byte letters cleanly.
 std::string prefixColumns(const std::string& row, int columns) {
     if (columns <= 0) return "";
     std::string out;
@@ -99,7 +96,7 @@ Element Boot::render(const Theme& theme, const DecorationSettings& decoration,
                      int width, int height) const {
     const int age = static_cast<int>(elapsed().count());
 
-    // Too small for the block letters: say the name and get out of the way.
+    // Too small for the block letters.
     if (width < markWidth() + 6 || height < 14) {
         return vbox({
             filler(),
@@ -109,8 +106,6 @@ Element Boot::render(const Theme& theme, const DecorationSettings& decoration,
         }) | bgcolor(toFtx(theme.bg));
     }
 
-    // The letters wipe in from the left; each row is revealed a column at a
-    // time so the whole word arrives as one movement rather than six.
     const int full = markWidth();
     const int revealed = !animate_ ? full
                                    : std::clamp(age * full / std::max(1, kWipeDone), 0, full);
@@ -118,7 +113,6 @@ Element Boot::render(const Theme& theme, const DecorationSettings& decoration,
     Elements art;
     const auto& rows = mark();
     for (std::size_t i = 0; i < rows.size(); ++i) {
-        // A gradient down the word, so it reads as lit rather than printed.
         const float t = static_cast<float>(i) / static_cast<float>(rows.size() - 1);
         const Rgb tint = theme.accent.mix(theme.accentAlt, t);
         art.push_back(hbox({
@@ -129,7 +123,6 @@ Element Boot::render(const Theme& theme, const DecorationSettings& decoration,
         }));
     }
 
-    // The facts arrive one at a time once the word is up.
     Elements facts;
     const int shown =
         !animate_ ? static_cast<int>(lines_.size())
@@ -137,8 +130,6 @@ Element Boot::render(const Theme& theme, const DecorationSettings& decoration,
                                    std::max(1, kLinesDone - kWipeDone),
                                0, static_cast<int>(lines_.size()));
 
-    // Pad both columns to a common width. Centring each row on its own would
-    // leave the labels stepping in and out as the values differ in length.
     const int valueRoom = std::max(8, width / 2);
     std::size_t labelWidth = 0;
     std::size_t valueWidth = 0;
