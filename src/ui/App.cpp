@@ -90,9 +90,7 @@ App::App(Config& config, Options options)
     };
 
     browser_.onCopyPath = [this] { copyToClipboard(browser_.path().string()); };
-    browser_.onPastePath = [this] { act("paste_path", {}); };
     browser_.onCycleSort = [this] { act("browser_sort", {}); };
-    browser_.onToggleHidden = [this] { act("toggle_hidden", {}); };
 
     configView_.onChanged = [this] { applyConfig(); };
     configView_.onEditExternally = [this] { act("edit_config", {}); };

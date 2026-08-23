@@ -36,7 +36,7 @@ public:
     };
 
     // What a click on the toolbar landed on.
-    enum class Hit { None, Back, Forward, Up, Path, Sort, Hidden, Filter };
+    enum class Hit { None, Back, Forward, Up, Path, Sort, Filter };
 
     // --- where we are -----------------------------------------------------
     // `record` puts the previous directory on the back stack; pass false for a
@@ -97,8 +97,6 @@ public:
     std::function<void(const std::filesystem::path&)> onOpenFile;
     // The toolbar's own buttons, for the ones the app owns.
     std::function<void()> onCopyPath;
-    std::function<void()> onPastePath;
-    std::function<void()> onToggleHidden;
     std::function<void()> onCycleSort;
 
 private:
