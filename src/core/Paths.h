@@ -21,6 +21,12 @@ std::filesystem::path stateDir();
 
 std::filesystem::path legacyPropertiesFile();
 
+// Written once the wizard has been through, so an interrupted first run does
+// not mean it is never offered again.
+std::filesystem::path setupMarker();
+bool setupDone();
+void markSetupDone();
+
 std::string expandUser(const std::string& path);
 
 std::string contractUser(const std::filesystem::path& path);

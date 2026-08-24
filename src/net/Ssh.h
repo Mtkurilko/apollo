@@ -49,5 +49,9 @@ Probe probe(const Connection& conn, int timeoutSeconds = 8);
 // Escapes one argument for a remote /bin/sh, which only ever sees a string.
 std::string quoteRemote(const std::string& text);
 
+// The same, for a path: a leading ~ or ~user is left alone so the remote shell
+// still expands it. Quoting it would make `cd` look for a directory called "~".
+std::string quoteRemotePath(const std::string& path);
+
 } // namespace ssh
 } // namespace apollo

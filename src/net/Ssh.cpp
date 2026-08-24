@@ -58,16 +58,37 @@ std::string controlPath(const Connection& conn) {
 
 std::string quoteRemote(const std::string& text) { return process::shellQuote(text); }
 
+std::string quoteRemotePath(const std::string& path) {
+    if (path.empty()) return "''";
+    if (path[0] != '~') return quoteRemote(path);
+
+    // Only a plain ~ or ~name is left bare; anything else in that first
+    // segment could be something the remote shell would rather not run.
+    const std::size_t slash = path.find('/');
+    const std::string head = path.substr(0, slash);
+    for (std::size_t i = 1; i < head.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(head[i]);
+        if (!std::isalnum(c) && c != '_' && c != '-' && c != '.') return quoteRemote(path);
+    }
+    if (slash == std::string::npos) return head;
+    return head + quoteRemote(path.substr(slash));
+}
+
 Invocation interactive(const Connection& conn) {
     Invocation call = begin(conn);
     addSharedOptions(call.argv, conn, 12);
     call.argv.push_back("-t"); // force a pty, so vim and friends work over the link
     call.argv.push_back(conn.label());
 
+    // The shell reports its pid on the way in, so the browser can ask the
+    // machine where that shell is without anything being installed on it.
+    // exec keeps the pid, so $$ here is the interactive shell's.
+    std::string start = "printf '\\033]777;apollo;pid;%s\\033\\\\' $$; ";
     if (!conn.remoteDir.empty()) {
-        call.argv.push_back("cd " + quoteRemote(conn.remoteDir) +
-                            " 2>/dev/null; exec \"$SHELL\" -l");
+        start += "cd " + quoteRemotePath(conn.remoteDir) + " 2>/dev/null; ";
     }
+    start += "exec \"${SHELL:-/bin/sh}\" -l";
+    call.argv.push_back(start);
     return call;
 }
 

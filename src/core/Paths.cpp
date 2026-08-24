@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include <cstdlib>
+#include <fstream>
 #include <system_error>
 
 namespace fs = std::filesystem;
@@ -64,6 +65,19 @@ bool ensureDir(const fs::path& dir, std::string* error) {
     // The config can hold SSH passwords.
     fs::permissions(dir, fs::perms::owner_all, fs::perm_options::replace, ec);
     return true;
+}
+
+fs::path setupMarker() { return configDir() / ".setup-complete"; }
+
+bool setupDone() {
+    std::error_code ec;
+    return fs::exists(setupMarker(), ec);
+}
+
+void markSetupDone() {
+    std::string error;
+    if (!ensureDir(configDir(), &error)) return;
+    std::ofstream(setupMarker(), std::ios::trunc) << "";
 }
 
 } // namespace apollo::paths

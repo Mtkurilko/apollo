@@ -48,6 +48,7 @@ add_library(apollo_core STATIC
     src/core/Commands.cpp
     src/core/Process.cpp
     src/net/Ssh.cpp
+    src/net/RemoteFs.cpp
     src/term/Pty.cpp
     src/term/Screen.cpp
     src/term/VtParser.cpp
