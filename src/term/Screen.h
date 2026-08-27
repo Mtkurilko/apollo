@@ -150,6 +150,10 @@ public:
     // --- things the UI wants to know about --------------------------------
     std::string title;
     std::string cwd;      // OSC 7
+    // The pid of a shell on the far end of a connection, which reports it once
+    // at startup. Nothing local needs this: it is how a remote directory is
+    // found without installing anything over there.
+    int shellPid = 0;
     bool bellPending = false;
     // OSC 133 C and D: the shell telling us a command started and finished.
     bool commandRunning = false;

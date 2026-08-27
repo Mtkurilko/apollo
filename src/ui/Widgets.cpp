@@ -305,4 +305,21 @@ Element modal(Element content, const Theme& theme, const DecorationSettings& dec
     });
 }
 
+Element Hotspots::track(int id, Element element) {
+    spots_.push_back({id, Box{}});
+    return std::move(element) | reflect(spots_.back().box);
+}
+
+int Hotspots::at(int x, int y) const {
+    int best = -1;
+    int smallest = 0;
+    for (const Spot& spot : spots_) {
+        if (!spot.box.Contain(x, y)) continue;
+        const int area = (spot.box.x_max - spot.box.x_min + 1) *
+                         (spot.box.y_max - spot.box.y_min + 1);
+        if (best < 0 || area < smallest) { best = spot.id; smallest = area; }
+    }
+    return best;
+}
+
 } // namespace apollo::ui

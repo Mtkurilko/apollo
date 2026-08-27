@@ -1,10 +1,12 @@
 // Shared interface pieces, and Apollo colours converted to FTXUI's.
 #pragma once
 
+#include <deque>
 #include <string>
 #include <vector>
 
 #include <ftxui/dom/elements.hpp>
+#include <ftxui/screen/box.hpp>
 #include <ftxui/screen/color.hpp>
 
 #include "core/Config.h"
@@ -38,6 +40,28 @@ ftxui::Element highlighted(const std::string& text,
 
 ftxui::Element modal(ftxui::Element content, const Theme& theme,
                      const DecorationSettings& decoration, int width, int height);
+
+// Where the things a mouse can hit ended up. An overlay tracks its rows and
+// buttons while rendering, then asks what is under the pointer when a click
+// arrives, so nothing has to work out the geometry of a centred modal by hand.
+class Hotspots {
+public:
+    void clear() { spots_.clear(); }
+
+    // Wraps an element so rendering records the box it occupied under `id`.
+    ftxui::Element track(int id, ftxui::Element element);
+
+    // The smallest tracked box containing the point, or -1.
+    int at(int x, int y) const;
+
+private:
+    struct Spot {
+        int id = 0;
+        ftxui::Box box;
+    };
+    // A deque: reflect() keeps a reference, so the boxes must not move.
+    std::deque<Spot> spots_;
+};
 
 struct LineEdit {
     std::string text;

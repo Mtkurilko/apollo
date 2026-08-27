@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include <ftxui/component/mouse.hpp>
 #include <ftxui/dom/elements.hpp>
 
 #include "core/Config.h"
@@ -27,6 +28,7 @@ public:
     bool isOpen() const { return open_; }
 
     bool onKey(const KeyChord& chord, const std::string& raw);
+    bool onMouse(const ftxui::Mouse& mouse);
 
     ftxui::Element render(const Theme& theme,
                           const DecorationSettings& decoration,
@@ -49,6 +51,9 @@ private:
     std::vector<Filtered> shown_;
     int selected_ = 0;
     int scroll_ = 0;
+
+    // Filled while rendering: which row, or which footer button, is where.
+    Hotspots spots_;
 };
 
 } // namespace apollo::ui

@@ -100,8 +100,39 @@ bool Palette::onKey(const KeyChord& chord, const std::string& raw) {
     return true;
 }
 
+namespace {
+constexpr int kClose = -2;
+constexpr int kFirstRow = 0; // and one id per visible row above it
+} // namespace
+
+bool Palette::onMouse(const Mouse& mouse) {
+    if (!open_) return false;
+
+    if (mouse.button == Mouse::WheelUp || mouse.button == Mouse::WheelDown) {
+        const int delta = mouse.button == Mouse::WheelUp ? -3 : 3;
+        if (!shown_.empty()) {
+            selected_ = std::clamp(selected_ + delta, 0, static_cast<int>(shown_.size()) - 1);
+        }
+        return true;
+    }
+    if (mouse.button != Mouse::Left || mouse.motion != Mouse::Pressed) return true;
+
+    const int hit = spots_.at(mouse.x, mouse.y);
+    if (hit == kClose) { close(); return true; }
+    if (hit >= kFirstRow && hit < static_cast<int>(shown_.size())) {
+        auto action = items_[shown_[static_cast<std::size_t>(hit)].index].run;
+        close();
+        if (action) action();
+        return true;
+    }
+    // Anywhere else, including outside the modal, dismisses it.
+    if (hit < 0) close();
+    return true;
+}
+
 Element Palette::render(const Theme& theme, const DecorationSettings& decoration,
                         int width, int height) {
+    spots_.clear();
     const int paletteWidth = std::clamp(width - 8, 40, 88);
     const int listHeight = std::clamp(height - 10, 4, 16);
 
@@ -135,7 +166,7 @@ Element Palette::render(const Theme& theme, const DecorationSettings& decoration
 
         Element row = hbox(std::move(cells));
         if (isSelected) row = std::move(row) | bgcolor(toFtx(theme.selection));
-        rows.push_back(std::move(row));
+        rows.push_back(spots_.track(i, std::move(row)));
     }
 
     if (rows.empty()) {
@@ -160,7 +191,7 @@ Element Palette::render(const Theme& theme, const DecorationSettings& decoration
             text("   "),
             hint("Enter", "run", theme),
             text("   "),
-            hint("Esc", "close", theme),
+            spots_.track(kClose, hint("Esc", "close", theme)),
         }),
     });
 

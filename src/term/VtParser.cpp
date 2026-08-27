@@ -471,6 +471,15 @@ void VtParser::dispatchOsc() {
         return;
     }
 
+    if (code == "777") {
+        // 777;<module>;… is the usual private namespace. Ours carries the pid
+        // of the shell `apollo connect` started.
+        if (rest.rfind("apollo;pid;", 0) == 0) {
+            screen_.shellPid = std::atoi(rest.c_str() + 11);
+        }
+        return;
+    }
+
     if (code == "52") {
         // Clipboard.
         const auto split = rest.find(';');

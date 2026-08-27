@@ -57,6 +57,7 @@ public:
     const std::string& connection() const { return options_.connection; }
     std::string windowTitle() const { return screen_.title; }
     std::string cwd() const { return screen_.cwd; }
+    int shellPid() const { return screen_.shellPid; }
 
     Screen& screen() { return screen_; }
     const Screen& screen() const { return screen_; }
