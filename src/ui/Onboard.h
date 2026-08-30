@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include <ftxui/component/mouse.hpp>
 #include <ftxui/dom/elements.hpp>
 
 #include "core/Config.h"
@@ -19,6 +20,7 @@ public:
     void start();
     bool isOpen() const { return open_; }
     bool onKey(const KeyChord& chord, const std::string& raw);
+    bool onMouse(const ftxui::Mouse& mouse);
     ftxui::Element render(const Theme& theme, const DecorationSettings& decoration,
                           int width, int height);
 
@@ -42,11 +44,17 @@ private:
     int themeIndex_ = 0;
     std::string previewTheme_;
 
+    // 0 is the yes/no chip; the rest are the fields below it.
+    static constexpr int kConnectionFields = 6;
     int connectionField_ = 0;
     LineEdit connectionName_;
     LineEdit connectionAddress_;
+    LineEdit connectionPort_;
     LineEdit connectionKey_;
+    LineEdit connectionPassword_;
     bool wantsConnection_ = false;
+
+    Hotspots spots_;
 
     bool shellIntegrationChoice_ = true;
     std::string shellIntegrationResult_;

@@ -252,7 +252,9 @@ int runConfig(std::vector<std::string> args, Config& config, Outcome& outcome) {
 
         std::cout << "Added " << conn.name << " -> " << conn.describe() << "\n\n"
                   << "Now give it a credential:\n"
-                  << "  apollo config set connection." << conn.name << ".key ~/.ssh/id_ed25519\n";
+                  << "  apollo config set connection." << conn.name << ".key ~/.ssh/id_ed25519\n"
+                  << "or, if there is no key to use:\n"
+                  << "  apollo config set connection." << conn.name << ".password <password>\n";
         return 0;
     }
 
@@ -355,6 +357,7 @@ std::string controlMessageFor(const std::vector<std::string>& args) {
     if (first == "reload") return "reload";
     if (first == "new-tab" || first == "tab") return "new-tab";
     if (first == "connect") return rest.empty() ? "connect" : "connect " + rest;
+    if (first == "disconnect") return "disconnect";
     if (first == "config" && args.size() == 1) return "config";
     if (first == "help" && args.size() == 1) return "help";
 
@@ -386,7 +389,7 @@ std::vector<std::string> completionsFor(const std::vector<std::string>& words,
     const std::size_t at = words.size();
 
     if (at <= 2) {
-        std::vector<std::string> out = {"connect", "config",  "setup", "doctor",
+        std::vector<std::string> out = {"connect", "disconnect", "config",  "setup", "doctor",
                                         "commands", "completions", "--help", "--version"};
         for (const auto& name : commandNames()) out.push_back(name);
         return out;
@@ -498,7 +501,9 @@ void printUsage() {
                  "  apollo <directory>          take both panes there\n"
                  "  apollo quit                 leave Apollo\n"
                  "  apollo config               open the settings\n"
-                 "  apollo new-tab              another terminal tab\n";
+                 "  apollo new-tab              another terminal tab\n"
+                 "  apollo connect [name]       another tab, connected\n"
+                 "  apollo disconnect           put this tab back on the local machine\n";
 }
 
 bool bootstrap(Config& config, std::string* note) {
@@ -519,6 +524,7 @@ bool bootstrap(Config& config, std::string* note) {
                                 ". The old file was left alone.";
                     }
                     config.load();
+                    paths::markSetupDone();
                     return false; // nothing to set up: the settings came across
                 }
             }
@@ -541,7 +547,8 @@ Outcome dispatch(const std::vector<std::string>& args, Config& config) {
         if (const std::string message = controlMessageFor(args); !message.empty()) {
             if (control::send(socket, message)) return outcome;
         }
-    } else if (!args.empty() && (args[0] == "quit" || args[0] == "exit")) {
+    } else if (!args.empty() &&
+               (args[0] == "quit" || args[0] == "exit" || args[0] == "disconnect")) {
         std::cerr << "Apollo is not running in this terminal.\n";
         outcome.code = 1;
         return outcome;
@@ -598,6 +605,13 @@ Outcome dispatch(const std::vector<std::string>& args, Config& config) {
 
         std::string error;
         if (!config.resolveConnection(rest.empty() ? "" : rest[0], error)) {
+            // Nothing named and several to choose from: open the window and
+            // let it ask, rather than printing a list to a shell.
+            if (rest.empty() && config.connections().size() > 1) {
+                outcome.options.connect.clear();
+                outcome.options.chooseConnection = true;
+                return outcome;
+            }
             std::cerr << error << "\n";
             outcome.launch = false;
             outcome.code = 1;

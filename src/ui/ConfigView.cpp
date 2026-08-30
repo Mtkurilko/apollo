@@ -259,10 +259,13 @@ void ConfigView::beginAdd() {
         prompt_ = Prompt{};
         prompt_.title = "Add an SSH destination";
         prompt_.fields = {
-            {"Name", "a short name, e.g. lab", false, false},
-            {"Address", "user@host", false, false},
-            {"Port", "22", false, true},
-            {"Key", "~/.ssh/id_ed25519 — leave blank for a password", false, true},
+            {"Name", "a short name, e.g. lab", false, false, nullptr},
+            {"Address", "user@host", false, false, nullptr},
+            {"Port", "22", false, true, nullptr},
+            {"Key", "~/.ssh/id_ed25519 — leave blank to use a password", false, true, nullptr},
+            // Only worth asking when there is no key to use instead.
+            {"Password", "needs sshpass; a key is safer", true, true,
+             [](const std::vector<std::string>& so_far) { return !so_far[3].empty(); }},
         };
         prompt_.finish = [this](const std::vector<std::string>& answers) {
             Connection conn;
@@ -277,6 +280,7 @@ void ConfigView::beginAdd() {
             }
             if (!answers[2].empty()) conn.port = ConfigFile::asInt(answers[2], 22);
             conn.keyPath = answers[3];
+            conn.password = answers[4];
 
             std::string problem;
             if (!config_.addConnection(conn, &problem)) { error_ = problem; return; }
@@ -293,9 +297,9 @@ void ConfigView::beginAdd() {
         prompt_ = Prompt{};
         prompt_.title = "Add a command";
         prompt_.fields = {
-            {"Name", "what you will type after `apollo`", false, false},
-            {"Runs", "a shell command or a script path", false, false},
-            {"Description", "shown in the palette", false, true},
+            {"Name", "what you will type after `apollo`", false, false, nullptr},
+            {"Runs", "a shell command or a script path", false, false, nullptr},
+            {"Description", "shown in the palette", false, true, nullptr},
         };
         prompt_.finish = [this](const std::vector<std::string>& answers) {
             std::string problem;
@@ -323,6 +327,13 @@ void ConfigView::advancePrompt() {
     prompt_.answers.push_back(answer);
     promptInput_.clear();
     ++prompt_.at;
+
+    // A field the earlier answers made pointless is answered as blank.
+    while (prompt_.at < prompt_.fields.size() &&
+           prompt_.fields[prompt_.at].skip && prompt_.fields[prompt_.at].skip(prompt_.answers)) {
+        prompt_.answers.emplace_back();
+        ++prompt_.at;
+    }
 
     if (prompt_.at >= prompt_.fields.size()) {
         prompting_ = false;
@@ -397,6 +408,65 @@ bool ConfigView::onKey(const KeyChord& chord, const std::string& raw) {
     return true; // the config screen owns every key while it is up
 }
 
+namespace {
+constexpr int kRowBase = 0;    // + the index of the row on the current page
+constexpr int kTabBase = 1000; // + the index of the section tab
+constexpr int kChange = 2000;
+constexpr int kEditor = 2001;
+constexpr int kClose = 2002;
+} // namespace
+
+bool ConfigView::onMouse(const Mouse& mouse) {
+    if (!open_) return false;
+
+    if (mouse.button == Mouse::WheelUp || mouse.button == Mouse::WheelDown) {
+        const int delta = mouse.button == Mouse::WheelUp ? -3 : 3;
+        row_ = std::clamp(row_ + delta, 0, std::max(0, rowCount() - 1));
+        return true;
+    }
+    if (mouse.button != Mouse::Left || mouse.motion != Mouse::Pressed) return true;
+
+    const int hit = spots_.at(mouse.x, mouse.y);
+    if (hit < 0) return true;
+
+    if (hit == kClose) {
+        if (prompting_) { prompting_ = false; error_.clear(); }
+        else if (editing_) cancelEdit();
+        else close();
+        return true;
+    }
+    if (hit == kEditor) {
+        if (!onEditExternally) return true;
+        close();
+        onEditExternally();
+        return true;
+    }
+    if (hit == kChange) {
+        if (prompting_) advancePrompt();
+        else if (editing_) commitEdit();
+        else beginEdit();
+        return true;
+    }
+    if (hit >= kTabBase) {
+        const int wanted = hit - kTabBase;
+        if (wanted < static_cast<int>(pages().size())) {
+            if (editing_) cancelEdit();
+            page_ = wanted;
+            row_ = 0;
+            scroll_ = 0;
+        }
+        return true;
+    }
+
+    // A row: the first click selects, a second one on the same row opens it.
+    const int wanted = hit - kRowBase;
+    if (wanted < 0 || wanted >= rowCount()) return true;
+    if (editing_ && wanted != row_) cancelEdit();
+    if (wanted == row_ && !editing_ && !prompting_) beginEdit();
+    else row_ = wanted;
+    return true;
+}
+
 // --- rendering -------------------------------------------------------------
 
 Element ConfigView::renderSettings(Page page, const Theme& theme, int width, int height) {
@@ -451,7 +521,7 @@ Element ConfigView::renderSettings(Page page, const Theme& theme, int width, int
 
         Element row = hbox(std::move(cells));
         if (isSelected) row = std::move(row) | bgcolor(toFtx(theme.selection));
-        rows.push_back(std::move(row));
+        rows.push_back(spots_.track(kRowBase + i, std::move(row)));
     }
     while (static_cast<int>(rows.size()) < visible) rows.push_back(text(""));
 
@@ -512,7 +582,7 @@ Element ConfigView::renderKeys(const Theme& theme, int height) {
             text(action ? action->summary + " " : "") | color(toFtx(theme.muted)),
         });
         if (i == row_) row = std::move(row) | bgcolor(toFtx(theme.selection));
-        rows.push_back(std::move(row));
+        rows.push_back(spots_.track(kRowBase + i, std::move(row)));
     }
     while (static_cast<int>(rows.size()) < visible) rows.push_back(text(""));
 
@@ -546,7 +616,7 @@ Element ConfigView::renderCommands(const Theme& theme, int height) {
             text(command.summary.empty() ? "" : command.summary + " ") | color(toFtx(theme.muted)),
         });
         if (i == row_) row = std::move(row) | bgcolor(toFtx(theme.selection));
-        rows.push_back(std::move(row));
+        rows.push_back(spots_.track(kRowBase + i, std::move(row)));
     }
     if (commands.empty()) {
         rows.push_back(text("   no commands defined yet") | color(toFtx(theme.muted)));
@@ -589,7 +659,7 @@ Element ConfigView::renderConnections(const Theme& theme, int height) {
             text(conn.name == preferred ? "default " : "        ") | color(toFtx(theme.accentAlt)),
         });
         if (i == row_) row = std::move(row) | bgcolor(toFtx(theme.selection));
-        rows.push_back(std::move(row));
+        rows.push_back(spots_.track(kRowBase + i, std::move(row)));
     }
     if (connections.empty()) {
         rows.push_back(text("   nothing configured — press a to add one") |
@@ -677,6 +747,7 @@ Element ConfigView::renderPrompt(const Theme& theme) {
 
 Element ConfigView::render(const Theme& theme, const DecorationSettings& decoration,
                            int width, int height) {
+    spots_.clear();
     const auto list = pages();
     page_ = std::clamp(page_, 0, static_cast<int>(list.size()) - 1);
     const Page page = list[static_cast<std::size_t>(page_)];
@@ -693,7 +764,7 @@ Element ConfigView::render(const Theme& theme, const DecorationSettings& decorat
         if (active) tab = std::move(tab) | bgcolor(toFtx(theme.accent)) | color(toFtx(theme.bg)) | bold;
         else tab = std::move(tab) | color(toFtx(theme.muted));
         if (list[i] == Page::Problems && !active) tab = std::move(tab) | color(toFtx(theme.warning));
-        tabs.push_back(std::move(tab));
+        tabs.push_back(spots_.track(kTabBase + static_cast<int>(i), std::move(tab)));
     }
 
     Element body;
@@ -710,19 +781,19 @@ Element ConfigView::render(const Theme& theme, const DecorationSettings& decorat
     Elements footer;
     footer.push_back(text(" "));
     if (prompting_) {
-        footer.push_back(hint("Enter", "next", theme));
+        footer.push_back(spots_.track(kChange, hint("Enter", "next", theme)));
         footer.push_back(text("  "));
-        footer.push_back(hint("Esc", "cancel", theme));
+        footer.push_back(spots_.track(kClose, hint("Esc", "cancel", theme)));
     } else {
         footer.push_back(hint("Tab", "section", theme));
         footer.push_back(text("  "));
         footer.push_back(hint("↑↓", "move", theme));
         footer.push_back(text("  "));
-        footer.push_back(hint("Enter", editing_ ? "save" : "change", theme));
+        footer.push_back(spots_.track(kChange, hint("Enter", editing_ ? "save" : "change", theme)));
         footer.push_back(text("  "));
-        footer.push_back(hint("e", "editor", theme));
+        footer.push_back(spots_.track(kEditor, hint("e", "editor", theme)));
         footer.push_back(text("  "));
-        footer.push_back(hint("Esc", "close", theme));
+        footer.push_back(spots_.track(kClose, hint("Esc", "close", theme)));
     }
     footer.push_back(filler());
     if (!error_.empty()) footer.push_back(text(error_ + " ") | color(toFtx(theme.error)));

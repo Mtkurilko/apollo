@@ -39,8 +39,8 @@ std::time_t toTimeT(fs::file_time_type when) {
     return std::chrono::system_clock::to_time_t(systemTime);
 }
 
-std::string humanTime(fs::file_time_type when) {
-    const std::time_t stamp = toTimeT(when);
+std::string humanTime(std::time_t stamp) {
+    if (stamp == 0) return "";
     std::tm parts{};
     if (!::localtime_r(&stamp, &parts)) return "";
 
@@ -77,6 +77,21 @@ std::string permissionString(fs::perms mode, bool directory) {
     out += bit(fs::perms::others_write, 'w');
     out += bit(fs::perms::others_exec, 'x');
     return out;
+}
+
+// The other direction, for the mode string a remote `ls` reported.
+fs::perms permissionsFrom(const std::string& text) {
+    fs::perms mode = fs::perms::none;
+    if (text.size() < 9) return mode;
+    static const fs::perms bits[9] = {
+        fs::perms::owner_read,  fs::perms::owner_write, fs::perms::owner_exec,
+        fs::perms::group_read,  fs::perms::group_write, fs::perms::group_exec,
+        fs::perms::others_read, fs::perms::others_write, fs::perms::others_exec,
+    };
+    for (std::size_t i = 0; i < 9; ++i) {
+        if (text[i] != '-') mode |= bits[i];
+    }
+    return mode;
 }
 
 enum class Kind { Directory, Symlink, Executable, Code, Document, Data, Image, Archive, Media, Plain };
@@ -182,14 +197,17 @@ void BrowserView::setPath(const fs::path& path, bool record) {
     std::error_code ec;
     fs::path resolved = fs::weakly_canonical(path, ec);
     if (ec || resolved.empty()) resolved = path;
-    if (resolved == path_) return;
+    if (!remote() && resolved == path_) return;
 
     if (record) {
-        back_.push_back(path_);
+        back_.push_back(here());
         forward_.clear();
         if (back_.size() > 128) back_.erase(back_.begin());
     }
 
+    connection_.clear();
+    remotePath_.clear();
+    loading_ = false;
     path_ = resolved;
     selected_ = 0;
     scroll_ = 0;
@@ -202,48 +220,135 @@ void BrowserView::setPath(const fs::path& path, bool record) {
     filter_.clear();
 }
 
+void BrowserView::expectRemote(const std::string& connection, const std::string& path,
+                               bool record) {
+    if (connection_ == connection && remotePath_ == path && !all_.empty()) return;
+
+    if (record) {
+        back_.push_back(here());
+        forward_.clear();
+        if (back_.size() > 128) back_.erase(back_.begin());
+    }
+
+    connection_ = connection;
+    remotePath_ = path;
+    loading_ = true;
+    error_.clear();
+    selected_ = 0;
+    scroll_ = 0;
+    gitRoot_.clear();
+    gitStatus_.clear();
+    all_.clear();
+    shown_.clear();
+    filtering_ = false;
+    filter_.clear();
+}
+
+void BrowserView::showRemote(const remote::Listing& listing, const BrowserSettings& settings) {
+    if (listing.connection != connection_) return; // an answer from a tab since left
+
+    loading_ = false;
+    if (!listing.ok) {
+        error_ = listing.error;
+        all_.clear();
+        shown_.clear();
+        return;
+    }
+
+    error_.clear();
+    remotePath_ = listing.path;
+
+    // A refresh should not move the cursor off whatever was selected.
+    const Entry* was = selected();
+    const std::string wasNamed = was ? was->name : std::string();
+
+    all_.clear();
+    all_.reserve(listing.entries.size());
+    for (const remote::Entry& from : listing.entries) {
+        Entry entry;
+        entry.name = from.name;
+        entry.directory = from.directory;
+        entry.executable = from.executable;
+        entry.symlink = from.symlink;
+        entry.size = from.size;
+        entry.modified = from.modified;
+        entry.modifiedText = from.modifiedText;
+        entry.permissions = permissionsFrom(from.permissions);
+        all_.push_back(std::move(entry));
+    }
+    applyFilterAndSort(settings);
+    if (!wasNamed.empty()) selectByName(wasNamed);
+}
+
+void BrowserView::backToLocal(const fs::path& path, const BrowserSettings& settings) {
+    connection_.clear();
+    remotePath_.clear();
+    loading_ = false;
+    path_ = path;
+    all_.clear();
+    shown_.clear();
+    selected_ = 0;
+    scroll_ = 0;
+    refresh(settings);
+}
+
+void BrowserView::goTo(const Step& step, const BrowserSettings& settings) {
+    if (step.connection.empty()) {
+        // setPath does the clearing, and would refuse the move if the pane
+        // were already marked local at this path.
+        setPath(step.path, false);
+        refresh(settings);
+    } else if (onNeedRemote) {
+        connection_.clear(); // so this counts as a move, not a repeat
+        onNeedRemote(step.connection, step.path);
+    }
+    if (onMoved) onMoved(step.connection, step.path);
+}
+
 bool BrowserView::goBack(const BrowserSettings& settings) {
     if (back_.empty()) return false;
 
-    const fs::path target = back_.back();
+    const Step target = back_.back();
     back_.pop_back();
-    const fs::path leaving = path_;
+    const Step leaving = here();
 
-    setPath(target, false);
+    goTo(target, settings);
     forward_.push_back(leaving);
-    refresh(settings);
-    selectByName(leaving.filename().string());
+    selectByName(fs::path(leaving.path).filename().string());
     return true;
 }
 
 bool BrowserView::goForward(const BrowserSettings& settings) {
     if (forward_.empty()) return false;
 
-    const fs::path target = forward_.back();
+    const Step target = forward_.back();
     forward_.pop_back();
-    const fs::path leaving = path_;
+    const Step leaving = here();
 
-    setPath(target, false);
+    goTo(target, settings);
     back_.push_back(leaving);
-    refresh(settings);
     return true;
 }
 
 bool BrowserView::goUp(const BrowserSettings& settings) {
-    const fs::path parent = path_.parent_path();
-    if (parent.empty() || parent == path_) return false;
+    const fs::path current(where());
+    const fs::path parent = current.parent_path();
+    if (parent.empty() || parent == current) return false;
 
-    const std::string leaving = path_.filename().string();
+    const std::string leaving = current.filename().string();
     if (onEnterDirectory) onEnterDirectory(parent);
     else setPath(parent);
-    refresh(settings);
-    selectByName(leaving);
+    if (!remote()) {
+        refresh(settings);
+        selectByName(leaving);
+    }
     return true;
 }
 
 // --- reading ---------------------------------------------------------------
 
 void BrowserView::refresh(const BrowserSettings& settings) {
+    if (remote()) return; // the other end answers on its own schedule
     std::error_code ec;
     all_.clear();
     error_.clear();
@@ -271,7 +376,7 @@ void BrowserView::refresh(const BrowserSettings& settings) {
             if (itemError) entry.size = 0;
             entry.executable = (entry.permissions & fs::perms::owner_exec) != fs::perms::none;
         }
-        entry.modified = item.last_write_time(itemError);
+        entry.modified = toTimeT(item.last_write_time(itemError));
         all_.push_back(std::move(entry));
     }
     if (ec) error_ = ec.message();
@@ -336,6 +441,7 @@ void BrowserView::applyFilterAndSort(const BrowserSettings& settings) {
 }
 
 void BrowserView::loadGitStatus() {
+    if (remote()) return; // running git here would report on the wrong machine
     gitStatus_.clear();
 
     // Find .git first: outside a repo this is one stat per parent, not a failed spawn.
@@ -379,6 +485,16 @@ void BrowserView::loadGitStatus() {
 }
 
 void BrowserView::refreshIfStale(const BrowserSettings& settings) {
+    if (remote()) {
+        if (settings.showHidden != lastShowHidden_ || settings.sort != lastSort_ ||
+            settings.sortReverse != lastReverse_) {
+            lastShowHidden_ = settings.showHidden;
+            lastSort_ = settings.sort;
+            lastReverse_ = settings.sortReverse;
+            applyFilterAndSort(settings);
+        }
+        return;
+    }
     const auto now = std::chrono::steady_clock::now();
     if (now - lastCheck_ < std::chrono::milliseconds(400)) return;
     lastCheck_ = now;
@@ -503,7 +619,7 @@ bool BrowserView::onKey(const KeyChord& chord, const BrowserSettings& settings) 
     if (chord.key == "enter" || chord.key == "right") {
         const Entry* entry = selected();
         if (!entry) return true;
-        const fs::path target = path_ / entry->name;
+        const fs::path target = fs::path(where()) / entry->name;
         if (entry->directory) { if (onEnterDirectory) onEnterDirectory(target); }
         else if (onOpenFile) onOpenFile(target);
         return true;
@@ -558,7 +674,8 @@ std::vector<BrowserView::Segment> BrowserView::toolbar(const BrowserSettings& se
 
     segments.push_back({Hit::Back, 0, 2, canGoBack()});
     segments.push_back({Hit::Forward, 3, 5, canGoForward()});
-    segments.push_back({Hit::Up, 6, 8, path_.parent_path() != path_});
+    const fs::path current(where());
+    segments.push_back({Hit::Up, 6, 8, current.parent_path() != current});
 
     const int sortWidth = static_cast<int>(sortLabel(settings).size()) + 2;
     int right = width;
@@ -619,13 +736,16 @@ bool BrowserView::onClick(int row, int column, bool doubleClick,
     if (!doubleClick) return true;
 
     const Entry& entry = shown_[static_cast<std::size_t>(index)];
-    const fs::path target = path_ / entry.name;
+    const fs::path target = fs::path(where()) / entry.name;
     if (entry.directory) { if (onEnterDirectory) onEnterDirectory(target); }
     else if (onOpenFile) onOpenFile(target);
     return true;
 }
 
 std::string BrowserView::statusLine() const {
+    if (loading_) {
+        return "listing " + elidePath(remotePath_, 40) + " on " + connection_ + "…";
+    }
     if (!error_.empty()) return error_;
 
     int directories = 0;
@@ -655,7 +775,8 @@ Element BrowserView::renderToolbar(const Theme& theme, const BrowserSettings& se
     Elements parts;
     parts.push_back(button("←", Hit::Back, canGoBack()));
     parts.push_back(button("→", Hit::Forward, canGoForward()));
-    parts.push_back(button("↑", Hit::Up, path_.parent_path() != path_));
+    const fs::path current(where());
+    parts.push_back(button("↑", Hit::Up, current.parent_path() != current));
 
     int pathRoom = width - 9;
     const int sortWidth = static_cast<int>(sortLabel(settings).size()) + 2;
@@ -673,7 +794,8 @@ Element BrowserView::renderToolbar(const Theme& theme, const BrowserSettings& se
         parts.push_back(text(find_) | color(toFtx(theme.accent)) | bold);
         parts.push_back(filler());
     } else {
-        parts.push_back(text(elidePath(paths::contractUser(path_), std::max(4, pathRoom))) |
+        parts.push_back(text(elidePath(remote() ? remotePath_ : paths::contractUser(path_),
+                                       std::max(4, pathRoom))) |
                         color(toFtx(focused ? theme.fg : theme.muted)));
         parts.push_back(filler());
     }
@@ -712,7 +834,7 @@ Element BrowserView::renderDetails(const Theme& theme, int width) const {
 
     std::string facts = permissionString(entry->permissions, entry->directory);
     if (!entry->directory) facts += "  " + humanSize(entry->size);
-    facts += "  " + humanTime(entry->modified);
+    facts += "  " + (entry->modified ? humanTime(entry->modified) : entry->modifiedText);
     if (entry->git != ' ') facts += "  git:" + std::string(1, entry->git);
 
     return vbox({
@@ -790,7 +912,8 @@ Element BrowserView::render(const Theme& theme,
             cells.push_back(text(label + " ") | color(toFtx(theme.muted)));
         }
         if (timeWidth > 0) {
-            std::string label = humanTime(entry.modified);
+            std::string label =
+                entry.modified ? humanTime(entry.modified) : entry.modifiedText;
             if (static_cast<int>(label.size()) < timeWidth - 1) {
                 label.insert(label.begin(), timeWidth - 1 - label.size(), ' ');
             }

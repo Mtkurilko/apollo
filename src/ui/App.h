@@ -12,6 +12,7 @@
 #include "core/Commands.h"
 #include "core/Config.h"
 #include "core/Control.h"
+#include "net/RemoteFs.h"
 #include "term/Session.h"
 #include "ui/Boot.h"
 #include "ui/BrowserView.h"
@@ -27,6 +28,7 @@ public:
         bool runSetup = false;      // start in the wizard
         bool openConfig = false;    // start with the config screen up
         std::string connect;        // an SSH destination to open in the first tab
+        bool chooseConnection = false; // several are configured and none was named
         std::string workspace;      // overrides general.workspace
         std::string command;        // run this, then hand over to the shell
     };
@@ -53,8 +55,15 @@ private:
     // --- lifecycle --------------------------------------------------------
     void rebuildCommands();
     void applyConfig();
+    std::unique_ptr<term::Session> makeSession(const Connection* connection,
+                                               const std::string& initialCommand,
+                                               std::string* error);
     bool newTab(const Connection* connection, const std::string& initialCommand = "");
+    // Swaps what a tab is connected to without losing the tab itself.
+    bool retarget(int index, const Connection* connection);
     void closeTab(int index);
+    // Drops the shared ssh master once the last tab using it has gone.
+    void releaseConnection(const std::string& name);
     term::Session* active();
     const term::Session* active() const;
 
@@ -68,6 +77,8 @@ private:
     void act(const std::string& action, const std::vector<std::string>& args);
     void runCommand(const Command& command);
     void openPalette();
+    // The list of destinations, when `apollo connect` was not told which.
+    void pickConnection();
     void tick();
 
     // --- rendering --------------------------------------------------------
@@ -75,6 +86,7 @@ private:
     ftxui::Element renderStatusBar(const Layout& layout);
     ftxui::Element renderTabs();
     std::vector<int> tabEdges() const;
+    std::string whereLabel() const;
     ftxui::Element renderHelp(int width, int height);
     ftxui::Element renderSearch();
     ftxui::Element renderHints(int room);
@@ -96,7 +108,29 @@ private:
     int tab_ = 0;
     Focus focus_ = Focus::Terminal;
 
+    // --- the browser, which follows whichever machine the active tab is on --
+    void followActiveMachine();
+    void askRemote(const std::string& connection, const std::string& path, bool record = true);
+    // Takes the shell to wherever the pane just went, and stops follow_cwd
+    // from dragging the pane back before the shell has caught up.
+    void syncShell(const std::string& connection, const std::string& path);
+
     BrowserView browser_;
+    remote::Lister remoteLister_;
+    // The remote directory the shell last reported, so a listing that fails is
+    // not asked for again every tick.
+    std::string followedCwd_;
+    // A connection a tab is still on but the config no longer knows about, so
+    // the pane gives up on it once rather than every tick.
+    std::string abandonedConnection_;
+    // The connection the pane was last pointed at for the active tab, so
+    // browsing somewhere else is not undone on the next tick.
+    std::string shownMachine_;
+    std::chrono::steady_clock::time_point remoteRefreshed_{};
+    // Set when the connected terminal produces output, so the shell's
+    // directory is checked once it goes quiet rather than mid-command.
+    std::chrono::steady_clock::time_point remoteSettleAt_{};
+    std::uint64_t lastRevision_ = 0;
     Palette palette_;
     ConfigView configView_;
     Onboard onboard_;

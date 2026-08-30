@@ -72,6 +72,8 @@ const std::vector<Config::Setting>& Config::schema() {
         s.push_back(str("general.default_connection", "", "Used by a bare `apollo connect`"));
         s.push_back(flag("general.follow_cwd", true, "The browser follows the shell's directory"));
         s.push_back(flag("general.confirm_quit", false, "Ask before leaving with a command still running"));
+        s.push_back(flag("general.disconnect_closes_tab", true,
+                         "Disconnecting closes the tab, instead of leaving a local shell in it"));
 
         Setting theme = choice("decoration.theme", "apollo", Theme::builtinNames(),
                                "Colour scheme, built in or a file in ~/.apollo/themes");
@@ -428,6 +430,7 @@ void Config::derive() {
     general_.defaultConnection = text("general.default_connection", "");
     general_.followCwd = yes("general.follow_cwd", true);
     general_.confirmQuit = yes("general.confirm_quit", false);
+    general_.disconnectClosesTab = yes("general.disconnect_closes_tab", true);
 
     if (const auto spec = file_.get("leader")) {
         if (const auto chord = KeyChord::parse(*spec)) general_.leader = *chord;

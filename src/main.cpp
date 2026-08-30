@@ -23,10 +23,9 @@ int main(int argc, char** argv) {
     };
     const bool wantsConfig =
         args.empty() || std::find(readOnly.begin(), readOnly.end(), args[0]) == readOnly.end();
-    bool freshInstall = false;
     if (wantsConfig && !config.exists()) {
         std::string note;
-        freshInstall = apollo::cli::bootstrap(config, &note);
+        apollo::cli::bootstrap(config, &note);
         if (!note.empty() && !args.empty() && args[0] != "config") {
             std::cout << note << "\n";
         }
@@ -36,7 +35,12 @@ int main(int argc, char** argv) {
     apollo::cli::Outcome outcome = apollo::cli::dispatch(args, config);
     if (!outcome.launch) return outcome.code;
 
-    if (freshInstall) outcome.options.runSetup = true;
+    // The wizard leaves a marker behind, so a first run that was interrupted
+    // gets another chance rather than never being offered again.
+    if (!apollo::paths::setupDone() && outcome.options.connect.empty() &&
+        outcome.options.command.empty()) {
+        outcome.options.runSetup = true;
+    }
 
     apollo::ui::App app(config, outcome.options);
     return app.run();

@@ -25,6 +25,7 @@ namespace {
 const Event kTick = Event::Special("apollo:tick");
 const Event kOutput = Event::Special("apollo:output");
 const Event kControl = Event::Special("apollo:control");
+const Event kRemote = Event::Special("apollo:remote");
 
 // Just enough base64 to receive an OSC 52 clipboard payload.
 std::string decodeBase64(const std::string& text) {
@@ -54,17 +55,22 @@ App::App(Config& config, Options options)
     : config_(config),
       options_(std::move(options)),
       screen_(ScreenInteractive::Fullscreen()),
+      remoteLister_([this] { screen_.PostEvent(kRemote); }),
       configView_(config),
       onboard_(config) {
     applyConfig();
 
     browser_.onEnterDirectory = [this](const fs::path& path) {
+        if (browser_.remote()) {
+            const std::string connection = browser_.connection();
+            askRemote(connection, path.string());
+            // Keep the shell in step, so both panes agree on the directory.
+            syncShell(connection, path.string());
+            return;
+        }
         browser_.setPath(path);
         browser_.refresh(config_.browser());
-        // Keep the shell in step, so both panes agree on the current directory.
-        if (term::Session* session = active(); session && session->connection().empty()) {
-            session->sendText("cd " + process::shellQuote(path.string()) + "\r");
-        }
+        syncShell("", browser_.path().string());
     };
     browser_.onOpenFile = [this](const fs::path& path) {
         const std::string editor = config_.general().editor.empty()
@@ -73,6 +79,13 @@ App::App(Config& config, Options options)
         term::Session* session = active();
         if (!session) return;
 
+        // A file on the far end can only be opened by something running there.
+        if (browser_.remote()) {
+            session->sendText((editor.empty() ? "${EDITOR:-vi}" : editor) + " " +
+                              ssh::quoteRemote(path.string()) + "\r");
+            focus_ = Focus::Terminal;
+            return;
+        }
         if (!editor.empty()) {
             session->sendText(editor + " " + process::shellQuote(path.string()) + "\r");
             focus_ = Focus::Terminal;
@@ -85,7 +98,20 @@ App::App(Config& config, Options options)
         }
     };
 
-    browser_.onCopyPath = [this] { copyToClipboard(browser_.path().string()); };
+    browser_.onNeedRemote = [this](const std::string& connection, const std::string& path) {
+        askRemote(connection, path, false); // the step is already in the history
+    };
+    browser_.onMoved = [this](const std::string& connection, const std::string& path) {
+        syncShell(connection, path);
+    };
+    browser_.onCopyPath = [this] {
+        // Remote paths copy in scp form, which is what they are useful as.
+        if (const Connection* conn = config_.connection(browser_.connection())) {
+            copyToClipboard(conn->label() + ":" + browser_.where());
+            return;
+        }
+        copyToClipboard(browser_.path().string());
+    };
     browser_.onCycleSort = [this] { act("browser_sort", {}); };
 
     configView_.onChanged = [this] { applyConfig(); };
@@ -160,14 +186,19 @@ const term::Session* App::active() const {
     return tabs_[static_cast<std::size_t>(tab_)].get();
 }
 
-bool App::newTab(const Connection* connection, const std::string& initialCommand) {
+std::unique_ptr<term::Session> App::makeSession(const Connection* connection,
+                                               const std::string& initialCommand,
+                                               std::string* error) {
     const Layout layout = measure();
     auto session = std::make_unique<term::Session>(layout.terminalRows, layout.terminalCols,
                                                    config_.terminal().scrollback);
 
     term::Session::Options options;
     options.scrollback = config_.terminal().scrollback;
-    options.cwd = browser_.path().string();
+    // A local shell cannot start in a directory that only exists on the far
+    // end of a connection.
+    options.cwd = browser_.remote() ? paths::expandUser(config_.general().workspace)
+                                    : browser_.path().string();
     if (control_.running()) options.env.push_back("APOLLO_SOCKET=" + control_.path());
 
     if (connection) {
@@ -183,11 +214,7 @@ bool App::newTab(const Connection* connection, const std::string& initialCommand
         options.title = fs::path(shell).filename().string();
     }
 
-    std::string error;
-    if (!session->start(options, &error)) {
-        say(error, true);
-        return false;
-    }
+    if (!session->start(options, error)) return nullptr;
 
     session->setWakeup([this] { screen_.PostEvent(kOutput); });
     session->onClipboard = [this](const std::string& base64) {
@@ -197,13 +224,110 @@ bool App::newTab(const Connection* connection, const std::string& initialCommand
         if (payload.empty()) return;
         if (process::clipboardWrite(payload)) say("clipboard set by the terminal");
     };
+    if (!initialCommand.empty()) session->sendText(initialCommand + "\r");
+    return session;
+}
+
+bool App::newTab(const Connection* connection, const std::string& initialCommand) {
+    std::string error;
+    auto session = makeSession(connection, initialCommand, &error);
+    if (!session) {
+        say(error, true);
+        return false;
+    }
 
     tabs_.push_back(std::move(session));
     tab_ = static_cast<int>(tabs_.size()) - 1;
     focus_ = Focus::Terminal;
-
-    if (!initialCommand.empty()) tabs_.back()->sendText(initialCommand + "\r");
     return true;
+}
+
+bool App::retarget(int index, const Connection* connection) {
+    if (index < 0 || index >= static_cast<int>(tabs_.size())) return false;
+
+    std::string error;
+    auto session = makeSession(connection, "", &error);
+    if (!session) {
+        say(error, true);
+        return false;
+    }
+
+    const std::string was = tabs_[static_cast<std::size_t>(index)]->connection();
+    tabs_[static_cast<std::size_t>(index)]->close();
+    tabs_[static_cast<std::size_t>(index)] = std::move(session);
+    tab_ = index;
+    focus_ = Focus::Terminal;
+    releaseConnection(was);
+    return true;
+}
+
+void App::syncShell(const std::string& connection, const std::string& path) {
+    term::Session* session = active();
+    if (!session) return;
+    // Only ever cd a shell that is on the same machine as the pane.
+    if (session->connection() != connection) return;
+
+    if (!connection.empty()) {
+        session->sendText("cd " + ssh::quoteRemotePath(path) + "\r");
+        return;
+    }
+    session->sendText("cd " + process::shellQuote(path) + "\r");
+    pendingCwd_ = browser_.path();
+    pendingCwdUntil_ = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+}
+
+void App::askRemote(const std::string& connection, const std::string& path, bool record) {
+    const Connection* conn = config_.connection(connection);
+    if (!conn) { say("no connection called '" + connection + "'", true); return; }
+
+    const term::Session* session = active();
+    const int shellPid =
+        session && session->connection() == connection ? session->shellPid() : 0;
+
+    browser_.expectRemote(connection, path, record);
+    remoteLister_.request(*conn, path, shellPid);
+}
+
+// The pane shows the machine the active tab is on. Switching tabs, connecting
+// and disconnecting all end up here rather than each doing their own thing.
+void App::followActiveMachine() {
+    const term::Session* session = active();
+    const std::string wanted = session ? session->connection() : std::string();
+    if (wanted == shownMachine_) return;
+    shownMachine_ = wanted;
+    followedCwd_.clear();
+
+    if (wanted.empty()) {
+        const fs::path home(paths::expandUser(config_.general().workspace));
+        std::error_code ec;
+        browser_.backToLocal(fs::is_directory(home, ec) ? home : paths::home(),
+                             config_.browser());
+        return;
+    }
+
+    const Connection* conn = config_.connection(wanted);
+    if (!conn) {
+        // The connection was edited out of the config while a tab was on it.
+        if (abandonedConnection_ != wanted) {
+            abandonedConnection_ = wanted;
+            browser_.backToLocal(paths::home(), config_.browser());
+            say("'" + wanted + "' is no longer in the config", true);
+        }
+        return;
+    }
+    abandonedConnection_.clear();
+    std::string start = session->cwd();
+    if (start.empty()) start = conn->remoteDir.empty() ? "~" : conn->remoteDir;
+    askRemote(wanted, start, false);
+}
+
+void App::releaseConnection(const std::string& name) {
+    if (name.empty()) return;
+    // Another tab may still be riding the same master.
+    for (const auto& session : tabs_) {
+        if (session->connection() == name) return;
+    }
+    if (const Connection* conn = config_.connection(name)) ssh::closeMaster(*conn);
 }
 
 void App::closeTab(int index) {
@@ -213,9 +337,7 @@ void App::closeTab(int index) {
     tabs_[static_cast<std::size_t>(index)]->close();
     tabs_.erase(tabs_.begin() + index);
 
-    if (!connection.empty()) {
-        if (const Connection* conn = config_.connection(connection)) ssh::closeMaster(*conn);
-    }
+    releaseConnection(connection);
     if (tabs_.empty()) { quitting_ = true; screen_.Exit(); return; }
     tab_ = std::clamp(tab_, 0, static_cast<int>(tabs_.size()) - 1);
 }
@@ -358,7 +480,11 @@ void App::act(const std::string& action, const std::vector<std::string>& args) {
         return;
     }
     if (action == "copy_path") {
-        copyToClipboard(browser_.path().string());
+        if (const Connection* conn = config_.connection(browser_.connection())) {
+            copyToClipboard(conn->label() + ":" + browser_.where());
+        } else {
+            copyToClipboard(browser_.path().string());
+        }
         return;
     }
     if (action == "paste_path") {
@@ -367,6 +493,15 @@ void App::act(const std::string& action, const std::vector<std::string>& args) {
             wanted.pop_back();
         }
         if (wanted.empty()) { say("the clipboard is empty"); return; }
+
+        // copy_path writes remote paths in scp form, so accept them back.
+        if (const Connection* conn = config_.connection(browser_.connection())) {
+            const std::string prefix = conn->label() + ":";
+            if (wanted.rfind(prefix, 0) == 0) wanted.erase(0, prefix.size());
+            act("cd", {wanted});
+            say("went to " + wanted);
+            return;
+        }
 
         fs::path target = paths::expandUser(wanted);
         std::error_code ec;
@@ -462,15 +597,33 @@ void App::act(const std::string& action, const std::vector<std::string>& args) {
         std::string error;
         const auto conn = config_.resolveConnection(argument, error);
         if (!conn) {
+            // Several are configured and none was named: show them rather
+            // than telling the reader to go and look them up.
+            if (argument.empty() && config_.connections().size() > 1) {
+                pickConnection();
+                return;
+            }
             say(error.substr(0, error.find('\n')), true);
             return;
         }
-        if (newTab(&*conn)) say("connecting to " + conn->describe());
+        if (!newTab(&*conn)) return;
+        say("connecting to " + conn->describe());
+        askRemote(conn->name, conn->remoteDir.empty() ? "~" : conn->remoteDir);
         return;
     }
     if (action == "disconnect") {
         if (session->connection().empty()) { say("this tab is already local"); return; }
-        closeTab(tab_);
+        const std::string was = session->connection();
+
+        // A tab that was opened to hold a connection goes when the connection
+        // does — unless it is the only one, where that would close Apollo.
+        if (config_.general().disconnectClosesTab && tabs_.size() > 1) {
+            closeTab(tab_);
+        } else if (!retarget(tab_, nullptr)) {
+            return;
+        }
+        followActiveMachine();
+        say("disconnected from " + was);
         return;
     }
 
@@ -487,12 +640,15 @@ void App::act(const std::string& action, const std::vector<std::string>& args) {
         return;
     }
     if (action == "cd") {
-        const fs::path target = paths::expandUser(argument);
-        browser_.setPath(target);
+        if (!session->connection().empty()) {
+            const std::string where = argument.empty() ? "~" : argument;
+            askRemote(session->connection(), where);
+            syncShell(session->connection(), where);
+            return;
+        }
+        browser_.setPath(paths::expandUser(argument));
         browser_.refresh(config_.browser());
-        session->sendText("cd " + process::shellQuote(target.string()) + "\r");
-        pendingCwd_ = browser_.path();
-        pendingCwdUntil_ = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        syncShell("", browser_.path().string());
         return;
     }
 }
@@ -514,6 +670,7 @@ void App::handleControl(const std::string& message) {
     if (verb == "help") { helpOpen_ = true; return; }
     if (verb == "new-tab") { act("new_tab", {}); return; }
     if (verb == "connect") { act("connect", {argument}); return; }
+    if (verb == "disconnect") { act("disconnect", {}); return; }
     if (verb == "reload") { act("reload_config", {}); return; }
 
     say("Apollo did not understand '" + elide(message, 40) + "'", true);
@@ -527,6 +684,20 @@ bool App::runBind(const KeyChord& chord) {
         }
     }
     return false;
+}
+
+void App::pickConnection() {
+    std::vector<Palette::Item> items;
+    for (const auto& conn : config_.connections()) {
+        std::string detail = conn.describe();
+        if (!conn.remoteDir.empty()) detail += "  " + elidePath(conn.remoteDir, 24);
+        if (conn.name == config_.general().defaultConnection) detail += "  (default)";
+        detail += conn.keyPath.empty() ? (conn.password.empty() ? "  agent" : "  password")
+                                       : "  key";
+        items.push_back({conn.name, detail, "ssh", "",
+                         [this, name = conn.name] { act("connect", {name}); }});
+    }
+    palette_.open(std::move(items), "Connect to");
 }
 
 void App::openPalette() {
@@ -577,6 +748,24 @@ void App::tick() {
     }
     if (browserVisible()) browser_.refreshIfStale(config_.browser());
 
+    // A remote listing costs a round trip, so it is asked for on a slow beat
+    // rather than the local pane's directory-mtime poll — and once shortly
+    // after the terminal settles, which is when a cd has just happened.
+    if (const term::Session* session = active(); session && !session->connection().empty()) {
+        const std::uint64_t revision = session->screen().revision();
+        if (revision != lastRevision_) {
+            lastRevision_ = revision;
+            remoteSettleAt_ = now + std::chrono::milliseconds(400);
+        }
+    }
+    const bool settled = remoteSettleAt_.time_since_epoch().count() != 0 && now > remoteSettleAt_;
+    if (browser_.remote() && browserVisible() && !browser_.loading() &&
+        (settled || now - remoteRefreshed_ > std::chrono::seconds(5))) {
+        remoteSettleAt_ = {};
+        remoteRefreshed_ = now;
+        askRemote(browser_.connection(), browser_.where(), false);
+    }
+
     for (auto& session : tabs_) {
         if (!session->screen().bellPending) continue;
         session->screen().bellPending = false;
@@ -585,20 +774,35 @@ void App::tick() {
 
     for (auto& session : tabs_) session->pump();
 
+    followActiveMachine();
+
     if (config_.general().followCwd) {
         if (term::Session* session = active(); session && !session->cwd().empty()) {
-            std::error_code ec;
-            const fs::path reported = fs::weakly_canonical(session->cwd(), ec);
-
-            // Ignore the shell's cwd until it catches up with a cd we asked for.
-            if (!pendingCwd_.empty()) {
-                if (reported == pendingCwd_ ||
-                    std::chrono::steady_clock::now() > pendingCwdUntil_) {
-                    pendingCwd_.clear();
+            // A connected shell reports a path on the far end, which would be
+            // meaningless — or worse, coincidentally real — as a local one.
+            // Only follow a shell the pane is actually looking at: having
+            // browsed somewhere else is not a reason to be dragged back.
+            if (!session->connection().empty()) {
+                if (browser_.connection() == session->connection() &&
+                    session->cwd() != browser_.where() && session->cwd() != followedCwd_ &&
+                    !browser_.loading()) {
+                    followedCwd_ = session->cwd();
+                    askRemote(session->connection(), session->cwd());
                 }
-            } else if (reported != browser_.path() && fs::is_directory(reported, ec)) {
-                browser_.setPath(reported);
-                browser_.refresh(config_.browser());
+            } else if (!browser_.remote()) {
+                std::error_code ec;
+                const fs::path reported = fs::weakly_canonical(session->cwd(), ec);
+
+                // Ignore the shell's cwd until it catches up with a cd we asked for.
+                if (!pendingCwd_.empty()) {
+                    if (reported == pendingCwd_ ||
+                        std::chrono::steady_clock::now() > pendingCwdUntil_) {
+                        pendingCwd_.clear();
+                    }
+                } else if (reported != browser_.path() && fs::is_directory(reported, ec)) {
+                    browser_.setPath(reported);
+                    browser_.refresh(config_.browser());
+                }
             }
         }
     }
@@ -776,7 +980,41 @@ bool App::onEvent(const Event& event) {
         for (const auto& message : control_.take()) handleControl(message);
         return true;
     }
-    if (event.is_mouse()) return onMouse(event);
+    if (event == kRemote) {
+        if (const auto listing = remoteLister_.take()) {
+            browser_.showRemote(*listing, config_.browser());
+            if (!listing->ok && listing->connection == browser_.connection()) {
+                say(listing->error, true);
+            }
+            // The shell moved: follow it, the same as OSC 7 does locally.
+            // Only a change counts, so browsing elsewhere is not undone.
+            if (config_.general().followCwd && !listing->shellCwd.empty() &&
+                listing->shellCwd != followedCwd_) {
+                const bool alreadyThere = listing->shellCwd == listing->path;
+                followedCwd_ = listing->shellCwd;
+                if (!alreadyThere) askRemote(listing->connection, listing->shellCwd, false);
+            }
+        }
+        return true;
+    }
+    // Whatever is on top gets the mouse, or a click would land on the panes
+    // hidden behind it.
+    if (event.is_mouse()) {
+        const Mouse& mouse = const_cast<Event&>(event).mouse();
+        const bool click = mouse.button == Mouse::Left && mouse.motion == Mouse::Pressed;
+        if (boot_.running()) {
+            if (click) boot_.dismiss();
+            return true;
+        }
+        if (onboard_.isOpen()) return onboard_.onMouse(mouse);
+        if (configView_.isOpen()) return configView_.onMouse(mouse);
+        if (palette_.isOpen()) return palette_.onMouse(mouse);
+        if (helpOpen_) {
+            if (click) helpOpen_ = false;
+            return true;
+        }
+        return onMouse(event);
+    }
 
     const std::string raw = event.input();
     const KeyChord chord = decodeKey(raw);
@@ -872,6 +1110,15 @@ std::string tabLabel(const term::Session& session, std::size_t index) {
 
 } // namespace
 
+// The location, written the way it should be read: a bare path locally, and
+// user@host:path once the pane is showing the other end of a connection.
+std::string App::whereLabel() const {
+    if (const Connection* conn = config_.connection(browser_.connection())) {
+        return conn->label() + ":" + browser_.where();
+    }
+    return paths::contractUser(browser_.path());
+}
+
 std::vector<int> App::tabEdges() const {
     std::vector<int> edges{0};
     for (std::size_t i = 0; i < tabs_.size(); ++i) {
@@ -912,30 +1159,32 @@ Element App::renderStatusBar(const Layout& layout) {
                        color(toFtx(theme_->muted)));
     }
 
-    const int hintRoom = std::max(0, std::min(width / 2, width - 28));
-    Element hints = renderHints(hintRoom);
-    const bool showBrowserStats = width >= 96 && status_.empty() && config_.issues().empty();
-    int reserved = 2 + hintRoom;
     const std::size_t problems = config_.issues().size();
     const std::string problemNote =
         problems == 0 ? ""
                       : std::to_string(problems) +
                             (problems == 1 ? " config problem" : " config problems");
-    if (!status_.empty()) {
-        reserved += std::min(static_cast<int>(status_.size()), width / 2) + 3;
-    } else if (!problemNote.empty()) {
-        reserved += static_cast<int>(problemNote.size()) + 3;
-    }
-    if (showBrowserStats) reserved += static_cast<int>(browser_.statusLine().size()) + 2;
-    if (session && !session->connection().empty()) {
-        reserved += static_cast<int>(session->connection().size()) + 2;
-    } else if (width >= 60) {
-        reserved += 7;
-    }
+    const bool showBrowserStats = width >= 96 && status_.empty() && config_.issues().empty();
 
-    left.push_back(text(" " + elidePath(paths::contractUser(browser_.path()),
-                                        std::max(8, width - reserved)) +
-                        " ") |
+    // The bar is one row: whatever the message needs, the key hints give up,
+    // so a long one — an ssh failure, say — cannot squeeze out the spaces
+    // between everything else.
+    const std::string note = !status_.empty()          ? status_
+                             : !problemNote.empty()    ? problemNote
+                             : showBrowserStats        ? browser_.statusLine()
+                                                       : "";
+    const int noteRoom = note.empty() ? 0 : std::min(displayWidth(note), width / 2) + 2;
+
+    const int chipRoom = session && !session->connection().empty()
+                             ? static_cast<int>(session->connection().size()) + 2
+                         : width >= 60 ? 7
+                                       : 0;
+
+    const int hintRoom = std::max(0, std::min(width / 2, width - 28 - noteRoom));
+    Element hints = renderHints(hintRoom);
+    const int reserved = 2 + hintRoom + noteRoom + chipRoom;
+
+    left.push_back(text(" " + elidePath(whereLabel(), std::max(8, width - reserved)) + " ") |
                    color(toFtx(theme_->fg)));
 
     if (leaderArmed_) {
@@ -972,12 +1221,12 @@ Element App::renderStatusBar(const Layout& layout) {
     left.push_back(filler());
 
     if (!status_.empty()) {
-        left.push_back(text(elide(status_, std::max(10, width / 2)) + "  ") |
+        left.push_back(text(elide(note, noteRoom - 2) + "  ") |
                        color(toFtx(statusIsError_ ? theme_->error : theme_->success)));
     } else if (!problemNote.empty()) {
-        left.push_back(text(problemNote + "  ") | color(toFtx(theme_->warning)));
+        left.push_back(text(elide(note, noteRoom - 2) + "  ") | color(toFtx(theme_->warning)));
     } else if (showBrowserStats) {
-        left.push_back(text(browser_.statusLine() + "  ") | color(toFtx(theme_->muted)));
+        left.push_back(text(elide(note, noteRoom - 2) + "  ") | color(toFtx(theme_->muted)));
     }
 
     left.push_back(std::move(hints));
@@ -987,13 +1236,19 @@ Element App::renderStatusBar(const Layout& layout) {
 
 Element App::renderHints(int room) {
     struct Hint { std::string keys; std::string what; };
-    const std::vector<Hint> all = {
+    std::vector<Hint> all = {
         {keyHintFor("command_palette"), "commands"},
         {keyHintFor("help"), "keys"},
         {keyHintFor("open_config"), "config"},
         {keyHintFor("browser_filter"), "find"},
         {keyHintFor("quit"), "quit"},
     };
+
+    // The way out of a connection is worth saying while you are in one, and
+    // is only in the way the rest of the time.
+    if (const term::Session* session = active(); session && !session->connection().empty()) {
+        all.insert(all.begin() + 1, {keyHintFor("disconnect"), "disconnect"});
+    }
 
     Elements parts;
     int used = 0;
@@ -1146,8 +1401,8 @@ Element App::render() {
         const bool wide = BrowserSettings::densityFor(layout.browserWidth) ==
                           BrowserSettings::Density::Wide;
         const std::string browserTitle =
-            (wide ? "◉ " : "") +
-            elidePath(paths::contractUser(browser_.path()), layout.browserWidth - (wide ? 8 : 6));
+            (wide ? (browser_.remote() ? "⇅ " : "◉ ") : "") +
+            elidePath(whereLabel(), layout.browserWidth - (wide ? 8 : 6));
 
         Element browserPane =
             panel(browserTitle,
@@ -1242,6 +1497,7 @@ int App::run() {
     if (connection) say("connecting to " + connection->describe() + "…");
     else if (!controlError.empty()) say(controlError, true);
 
+    if (options_.chooseConnection) pickConnection();
     if (options_.runSetup) onboard_.start();
     if (options_.openConfig) configView_.open();
     if (!options_.command.empty()) tabs_.front()->sendText(options_.command + "\r");
@@ -1249,7 +1505,7 @@ int App::run() {
     if (config_.decoration().boot) {
         std::vector<Boot::Line> lines;
         lines.push_back({"config", paths::contractUser(config_.path())});
-        lines.push_back({"opens", paths::contractUser(browser_.path())});
+        lines.push_back({"opens", whereLabel()});
         if (connection) lines.push_back({"ssh", connection->describe()});
         else lines.push_back({"theme", config_.decoration().theme});
         boot_.start(std::move(lines), config_.decoration().animate);

@@ -22,6 +22,9 @@ struct GeneralSettings {
     std::string defaultConnection;
     bool followCwd = true;   // the browser tracks the shell's directory
     bool confirmQuit = false;
+    // A tab opened for a connection goes away with it, rather than turning
+    // back into a local shell.
+    bool disconnectClosesTab = true;
     KeyChord leader{ModCtrl, "space"};
 };
 

@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include <ftxui/component/mouse.hpp>
 #include <ftxui/dom/elements.hpp>
 
 #include "core/Config.h"
@@ -21,6 +22,7 @@ public:
     bool isOpen() const { return open_; }
 
     bool onKey(const KeyChord& chord, const std::string& raw);
+    bool onMouse(const ftxui::Mouse& mouse);
     ftxui::Element render(const Theme& theme,
                           const DecorationSettings& decoration,
                           int width,
@@ -37,6 +39,8 @@ private:
         std::string placeholder;
         bool mask = false;
         bool optional = false;
+        // Answers so far; return true to not ask this one at all.
+        std::function<bool(const std::vector<std::string>&)> skip;
     };
 
     std::vector<Page> pages() const;
@@ -67,6 +71,8 @@ private:
     int page_ = 0;
     int row_ = 0;
     int scroll_ = 0;
+
+    Hotspots spots_;
 
     bool editing_ = false;
     LineEdit editor_;
