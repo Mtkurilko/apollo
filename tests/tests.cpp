@@ -1,8 +1,7 @@
 // Apollo's tests. One binary, no framework to install: `ctest` or just run it.
 //
-// The parts worth testing are the ones with no screen attached — the config
-// language, key decoding, the terminal grid and the escape parser — and those
-// are exactly the parts that would be miserable to check by hand.
+// The parts worth testing are the ones with no screen attached: the config
+// language, key decoding, the terminal grid and the escape parser.
 
 #include <ftxui/dom/node.hpp>
 #include <ftxui/screen/screen.hpp>
@@ -22,6 +21,8 @@
 #include "core/Layout.h"
 #include "core/Paths.h"
 #include "core/Theme.h"
+#include "net/RemoteFs.h"
+#include "net/Ssh.h"
 #include "ui/Boot.h"
 #include "ui/BrowserView.h"
 #include "ui/Widgets.h"
@@ -921,6 +922,103 @@ void testPaths() {
 
 } // namespace
 
+void testRemoteListing() {
+    section("remote listings");
+
+    // GNU ls, which takes --time-style and so reports the mtime as an epoch.
+    const std::string gnu =
+        "/home/alice/work\n"
+        "EPOCH\n"
+        "total 20\n"
+        "drwxr-xr-x  3 alice alice 4096 1719000000 src\n"
+        "-rw-r--r--  1 alice alice  120 1718900000 notes.txt\n"
+        "-rwxr-xr-x  1 alice alice  980 1718800000 deploy.sh\n"
+        "lrwxrwxrwx  1 alice alice   22 1718700000 current -> /srv/app/releases/42\n"
+        "APOLLO_DIRS\n"
+        "src/\n"
+        "notes.txt\n"
+        "deploy.sh\n"
+        "current/\n";
+
+    const auto listing = apollo::remote::parse(gnu);
+    check(listing.ok, "a GNU listing parses");
+    check(listing.path == "/home/alice/work", "the directory comes from pwd, not the request");
+    check(listing.entries.size() == 4, "every entry is read, and the total line is not one");
+
+    check(listing.entries[0].name == "src" && listing.entries[0].directory,
+          "a directory is a directory");
+    check(listing.entries[1].name == "notes.txt" && !listing.entries[1].directory &&
+              listing.entries[1].size == 120,
+          "a file keeps its size");
+    check(listing.entries[1].modified == 1718900000, "and its mtime");
+    check(listing.entries[2].executable, "the owner execute bit is noticed");
+    check(!listing.entries[1].executable, "and not invented");
+
+    check(listing.entries[3].name == "current", "a symlink loses the arrow from its name");
+    check(listing.entries[3].linkTarget == "/srv/app/releases/42", "which becomes the target");
+    check(listing.entries[3].symlink, "it is still marked as a link");
+    check(listing.entries[3].directory,
+          "and the second listing shows it points at a directory");
+
+    check(listing.entries[0].permissions == "rwxr-xr-x", "the mode comes across");
+
+    // BSD ls, which does not, and writes three fields of date instead.
+    const std::string bsd =
+        "/Users/alice\n"
+        "TEXT\n"
+        "total 8\n"
+        "drwxr-xr-x  5 alice staff  160 21 Jun 10:33 Documents\n"
+        "-rw-r--r--  1 alice staff 1024 14 Feb  2024 taxes.pdf\n"
+        "APOLLO_DIRS\n"
+        "Documents/\n"
+        "taxes.pdf\n";
+
+    const auto other = apollo::remote::parse(bsd);
+    check(other.ok, "a BSD listing parses too");
+    check(other.entries.size() == 2, "with the same entries");
+    check(other.entries[0].name == "Documents" && other.entries[0].directory,
+          "the name is found past three date fields");
+    check(other.entries[1].name == "taxes.pdf" && other.entries[1].size == 1024,
+          "and the size is still the size");
+    check(other.entries[1].modified == 0, "an unparsed date is left at zero, not guessed");
+    check(other.entries[0].modifiedText == "21 Jun 10:33",
+          "but the date the remote wrote is kept, so the column is not blank");
+    check(other.entries[1].modifiedText == "14 Feb  2024", "including a year instead of a time");
+
+    // Names with spaces, which is why the name is taken as the rest of the line.
+    const std::string spaced =
+        "/tmp\n"
+        "EPOCH\n"
+        "-rw-r--r--  1 alice alice 10 1719000000 my notes 2024.txt\n"
+        "APOLLO_DIRS\n";
+    const auto withSpaces = apollo::remote::parse(spaced);
+    check(withSpaces.entries.size() == 1 && withSpaces.entries[0].name == "my notes 2024.txt",
+          "a name with spaces survives");
+
+    const auto missing = apollo::remote::parse("APOLLO_NODIR\n");
+    check(!missing.ok, "a directory that is not there is an error");
+
+    const auto nothing = apollo::remote::parse("");
+    check(!nothing.ok, "and so is silence");
+}
+
+void testRemoteQuoting() {
+    section("remote paths");
+    using apollo::ssh::quoteRemotePath;
+
+    // Quoting the tilde is what made `cd` look for a directory called "~".
+    check(quoteRemotePath("~") == "~", "a bare tilde is left for the remote shell");
+    check(quoteRemotePath("~/work") == "~'/work'", "and so is the tilde in front of a path");
+    check(quoteRemotePath("~alice/src") == "~alice'/src'", "including ~user");
+    check(quoteRemotePath("/srv/app") == "'/srv/app'", "an absolute path is quoted whole");
+    check(quoteRemotePath("/tmp/it's here") == "'/tmp/it'\\''s here'",
+          "and a quote in one is escaped");
+    check(quoteRemotePath("~$(id)/x").find("$(") == std::string::npos ||
+              quoteRemotePath("~$(id)/x")[0] == '\'',
+          "anything else after the tilde is quoted rather than run");
+    check(quoteRemotePath("") == "''", "and nothing becomes an empty argument");
+}
+
 int main() {
     // Never touch the real ~/.apollo: the tests write themes and read the
     // commands directory, and somebody's actual settings are not a fixture.
@@ -944,6 +1042,8 @@ int main() {
     testConfig();
     testMigration();
     testThemeFiles();
+    testRemoteListing();
+    testRemoteQuoting();
 
     std::filesystem::remove_all(sandbox);
 

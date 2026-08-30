@@ -41,7 +41,9 @@ PREFIX=~/.local ./install.sh
 
 Then run `apollo` from anywhere. The first run asks where to open, which theme,
 an optional SSH destination, and whether to install shell integration, then
-writes a commented `~/.apollo/apollo.conf`. All of it can be changed later.
+writes a commented `~/.apollo/apollo.conf`. All of it can be changed later, and
+`apollo setup` runs it again. A first run that was interrupted is offered
+again next time rather than skipped for good.
 
 ## Commands
 
@@ -75,12 +77,15 @@ then press the key. Anything not listed goes to the program in the terminal.
 | `Leader ←` / `→` | Resize the panes |
 | `Leader U` / `[` / `]` | Up a directory, back, forward |
 | `Leader Y` / `V` | Copy the current path, go to the one on the clipboard |
+| `Leader D` | Disconnect: put this tab back on the local machine |
 | `Shift+PgUp` / `PgDn` | Scroll back |
 | `F1` | Full key reference |
 | `F10` | Quit |
 
 Drag to select and the selection is copied. The wheel scrolls, double click
-opens, click a tab to switch. Every key is a line in the config, and `unbind`
+opens, click a tab to switch. The palette, the settings editor and the wizard
+all take the mouse too — click a row to pick it, a section tab to move, a
+setting twice to change it. Every key is a line in the config, and `unbind`
 removes any of them.
 
 Keys that rearrange the panes — show the browser, stack it, resize it, show
@@ -106,6 +111,12 @@ shows permissions, size and mtime for whatever is selected.
 `browser.sort` cycles name, size, modified and type; `browser.sort_reverse`
 flips it. Both are on the toolbar, in the palette and in the config.
 
+The terminal comes along. Back, forward, up, opening a directory and
+`Leader V` all `cd` the shell as well as moving the pane, so the two never
+drift apart. The other direction — the pane following a `cd` you type — needs
+the shell integration below on this machine, and needs nothing at all on the
+far end of a connection.
+
 ## Apollo inside Apollo
 
 Running `apollo` in Apollo's own terminal talks to the instance that is already
@@ -119,6 +130,7 @@ there, over a socket each instance creates for the shells it starts:
 | `apollo config` | Open the settings |
 | `apollo new-tab` | Another terminal tab |
 | `apollo connect lab` | Another tab, connected |
+| `apollo disconnect` | Put this tab back on the local machine |
 
 Everything else — `apollo doctor`, `apollo config list`, your own commands —
 prints in the terminal where you typed it.
@@ -281,6 +293,26 @@ $ apollo commands
 normal one — full screen programs, signals, colours. Connections share a
 control socket, so the second one is a round trip rather than a handshake.
 
+The browser follows. While a tab is connected the pane lists the machine that
+tab is on, not this one: the same navigation, filtering, sorting and dotfiles,
+over the connection that is already open. The title carries a `⇅` and the path
+reads `user@host:/path`, which is also what `Leader Y` copies. Switch tabs and
+the pane switches machines with you.
+
+`Leader D`, or `apollo disconnect`, ends a connection. A tab opened to hold one
+goes with it; set `general.disconnect_closes_tab = false` to leave a local
+shell in the tab instead. The last tab is never closed out from under you — it
+becomes a local shell either way. The shared ssh master is dropped once the
+last tab using it has gone.
+
+The pane follows a `cd` you type over there too, with nothing installed on the
+remote: the shell reports its pid on the way in, and the listing round trip
+reads that process's directory. Linux answers through `/proc`, other systems
+through `lsof`; one that offers neither simply does not follow.
+
+Sizes, dates, permissions and the executable bit come from the remote `ls`.
+Git status does not: that would be running git on the wrong machine.
+
 ```bash
 apollo config add lab alice@10.0.0.5
 apollo config set connection.lab.key ~/.ssh/id_ed25519
@@ -292,6 +324,7 @@ connection lab {
     host       = 10.0.0.5
     user       = alice
     key        = ~/.ssh/id_ed25519
+    port       = 2222
     remote_dir = ~/work
     jump       = bastion.example.com
 }
@@ -299,14 +332,16 @@ connection lab {
 
 How `apollo connect` picks one:
 
+- A name you give always wins: `apollo connect lab`.
 - One destination configured: it is used, no name needed.
-- Several: name one, `apollo connect lab`, unless `general.default_connection`
-  is set.
-- A name you give always wins.
+- `general.default_connection`, if it is set.
+- Otherwise Apollo lists them and asks, with the address, port, directory and
+  which credential each one uses.
 
-Prefer a key. A password has to go through `sshpass`; Apollo passes it in the
-environment rather than `argv` so it stays out of `ps`, but a key avoids the
-question.
+`apollo config add` asks for the port and, when you have no key to point at, a
+password. Prefer the key: a password has to go through `sshpass`, and lives in
+`~/.apollo/apollo.conf`, which is written `0600`. Apollo passes it through the
+environment rather than `argv`, so it stays out of `ps`.
 
 ## Shell integration
 
@@ -333,6 +368,7 @@ line. Nothing else depends on it.
 | `src/term/Session` | One terminal, and the view state of looking at it |
 | `src/ui/*` | Panes, palette, settings editor, wizard |
 | `src/net/Ssh` | Destinations, multiplexing, keeping secrets out of `argv` |
+| `src/net/RemoteFs` | Listing directories over an open connection, off the UI thread |
 
 Reading is split so the screen has one writer and needs no locking: a thread
 waits on the pty and only signals that bytes are ready; the bytes are read and
@@ -346,8 +382,8 @@ cmake -S . -B build && cmake --build build -j8
 ```
 
 The tests cover the parts with no screen attached: the config language, key
-decoding, the terminal grid, the escape parser, reflow, connection resolution
-and migration.
+decoding, the terminal grid, the escape parser, reflow, connection resolution,
+remote listings and migration.
 
 For the rest, `scripts/drive.py` runs Apollo under a pty of a given size, sends
 keystrokes, and prints what it painted:
