@@ -154,6 +154,7 @@ const std::vector<ActionInfo>& knownActions() {
         {"help",            "Show the key and command reference", false},
         {"connect",         "Connect to an SSH destination", true},
         {"disconnect",      "Return to the local machine", false},
+        {"open_with",       "Choose what opens the selected file", false},
         {"run",             "Run an Apollo command by name", true},
         {"exec",            "Run a shell command in the terminal", true},
         {"cd",              "Change the working directory", true},

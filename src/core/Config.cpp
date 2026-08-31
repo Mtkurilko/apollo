@@ -319,6 +319,19 @@ leader = CTRL, SPACE
 # command = deploy, ./scripts/deploy.sh, "Ship the current branch"
 
 # ---------------------------------------------------------------------------
+# Opening files
+#
+#   open = <extension or *>, <ask | editor | desktop | a command>
+#
+# Apollo asks the first time it sees a type and writes the answer here, so
+# these lines usually appear on their own. Delete one to be asked again.
+# ---------------------------------------------------------------------------
+
+# open = md,  vim
+# open = png, desktop
+# open = log, less
+
+# ---------------------------------------------------------------------------
 # SSH destinations
 #
 # `apollo connect` with one connection configured uses it. With several, name
@@ -511,6 +524,24 @@ void Config::derive() {
         command.interactive = parts.size() <= 3 || ConfigFile::asBool(parts[3], true);
         command.line = entry->line;
         commands_.push_back(std::move(command));
+    }
+
+    // --- how files open ---
+    open_.clear();
+    for (const auto* entry : file_.root().entriesNamed("open")) {
+        const auto parts = ConfigFile::split(entry->value);
+        if (parts.size() < 2 || parts[0].empty() || parts[1].empty()) {
+            note("open needs something to match and what to open it with (line " +
+                 std::to_string(entry->line + 1) + ")");
+            continue;
+        }
+        OpenRule rule;
+        rule.match = Config::openMatch(parts[0]);
+        // A command may contain commas of its own, so put the rest back together.
+        rule.how = parts[1];
+        for (std::size_t i = 2; i < parts.size(); ++i) rule.how += ", " + parts[i];
+        rule.line = entry->line;
+        open_.push_back(std::move(rule));
     }
 
     // --- connections ---
@@ -849,6 +880,56 @@ bool Config::addCommand(const std::string& name, const std::string& exec,
     std::string line = name + ", " + exec;
     if (!summary.empty()) line += ", \"" + summary + "\"";
     file_.append("command", line);
+    derive();
+    return true;
+}
+
+std::string Config::openKeyFor(const std::string& filename) {
+    if (filename == "*") return "*";
+
+    // A dotfile with no other dot is a name, not an extension: ".zshrc" has
+    // no type to remember it under.
+    const std::size_t dot = filename.find_last_of('.');
+    if (dot == std::string::npos || dot == 0 || dot + 1 == filename.size()) return "";
+
+    std::string key = filename.substr(dot + 1);
+    for (char& c : key) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return key;
+}
+
+std::string Config::openMatch(const std::string& text) {
+    std::string out = text;
+    while (!out.empty() && out.front() == '.') out.erase(out.begin());
+    for (char& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out.empty() ? "*" : out;
+}
+
+const OpenRule* Config::openRuleFor(const std::string& filename) const {
+    const std::string key = openKeyFor(filename);
+    if (!key.empty()) {
+        for (const auto& rule : open_) {
+            if (rule.match == key) return &rule;
+        }
+    }
+    for (const auto& rule : open_) {
+        if (rule.match == "*") return &rule;
+    }
+    return nullptr;
+}
+
+bool Config::setOpenRule(const std::string& match, const std::string& how) {
+    if (match.empty() || how.empty()) return false;
+
+    // One rule per thing matched: replace rather than pile up.
+    const std::string key = openMatch(match);
+    file_.removeMatching("open", key + ",");
+    file_.append("open", key + ", " + how);
+    derive();
+    return true;
+}
+
+bool Config::removeOpenRule(const std::string& match) {
+    if (!file_.removeMatching("open", openMatch(match) + ",")) return false;
     derive();
     return true;
 }

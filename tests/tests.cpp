@@ -1002,6 +1002,42 @@ void testRemoteListing() {
     check(!nothing.ok, "and so is silence");
 }
 
+void testOpenRules() {
+    section("open rules");
+
+    apollo::Config config;
+    config.loadText(
+        "open = md, vim\n"
+        "open = .PNG, desktop\n"
+        "open = *, ask\n");
+
+    check(config.openRules().size() == 3, "every rule is read");
+    check(config.openRules()[1].match == "png",
+          "a leading dot and any capitals are normalised away");
+
+    const auto* markdown = config.openRuleFor("notes.md");
+    check(markdown && markdown->how == "vim", "a file matches on its extension");
+    const auto* image = config.openRuleFor("Photo.PNG");
+    check(image && image->how == "desktop", "and matching ignores case");
+    const auto* other = config.openRuleFor("archive.tar.gz");
+    check(other && other->how == "ask", "anything unmatched falls to the catch-all");
+
+    check(apollo::Config::openKeyFor("notes.md") == "md", "the key is the extension");
+    check(apollo::Config::openKeyFor("Makefile").empty(),
+          "a file with no extension has nothing to remember it under");
+    check(apollo::Config::openKeyFor(".zshrc").empty(),
+          "and neither does a dotfile, which is a name rather than a type");
+    check(apollo::Config::openKeyFor("archive.tar.gz") == "gz", "the last extension wins");
+
+    apollo::Config replacing;
+    replacing.loadText("open = md, vim\n");
+    replacing.setOpenRule("md", "less");
+    check(replacing.openRules().size() == 1, "setting a rule replaces rather than piles up");
+    check(replacing.openRules()[0].how == "less", "with the new answer");
+    check(replacing.removeOpenRule("md"), "and it can be forgotten");
+    check(replacing.openRules().empty(), "leaving nothing behind");
+}
+
 void testRemoteQuoting() {
     section("remote paths");
     using apollo::ssh::quoteRemotePath;
@@ -1044,6 +1080,7 @@ int main() {
     testThemeFiles();
     testRemoteListing();
     testRemoteQuoting();
+    testOpenRules();
 
     std::filesystem::remove_all(sandbox);
 

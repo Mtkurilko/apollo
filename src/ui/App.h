@@ -77,6 +77,12 @@ private:
     void act(const std::string& action, const std::vector<std::string>& args);
     void runCommand(const Command& command);
     void openPalette();
+    // --- opening a file ---------------------------------------------------
+    // Follows the `open` rule for its type; `alwaysAsk` puts the choice up
+    // again even when one has been remembered.
+    void openFile(const std::filesystem::path& path, bool alwaysAsk = false);
+    void askHowToOpen(const std::filesystem::path& path);
+    void runOpener(const std::string& how, const std::filesystem::path& path);
     // The list of destinations, when `apollo connect` was not told which.
     void pickConnection();
     void tick();

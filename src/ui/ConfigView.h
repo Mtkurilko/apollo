@@ -32,7 +32,8 @@ public:
     std::function<void()> onEditExternally;
 
 private:
-    enum class Page { General, Appearance, Terminal, Browser, Keys, Commands, Connections, Problems, About };
+    enum class Page { General, Appearance, Terminal, Browser, Keys, Commands, Connections,
+                      Openers, Problems, About };
 
     struct Field {
         std::string label;
@@ -62,6 +63,7 @@ private:
     ftxui::Element renderKeys(const Theme& theme, int height);
     ftxui::Element renderCommands(const Theme& theme, int height);
     ftxui::Element renderConnections(const Theme& theme, int height);
+    ftxui::Element renderOpeners(const Theme& theme, int height);
     ftxui::Element renderProblems(const Theme& theme, int height);
     ftxui::Element renderAbout(const Theme& theme);
     ftxui::Element renderPrompt(const Theme& theme);

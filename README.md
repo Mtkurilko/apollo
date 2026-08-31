@@ -258,6 +258,27 @@ The script asks Apollo what could come next, so completion covers setting
 names, their values, your themes, your SSH destinations and your own commands
 without going stale.
 
+## Opening files
+
+Enter or a double click on a file opens it. The first time Apollo sees a file
+type it asks what to open it with, offering the editors you actually have
+installed and, locally, whatever the desktop uses. The answer is remembered:
+
+```conf
+open = md,  vim
+open = png, desktop
+open = log, less
+```
+
+`ask` puts the question back, and so does deleting the line — from the file, or
+with `d` on the Open with page of `apollo config`. `Leader Space` → *Choose
+what opens the selected file* asks again for one file without changing
+anything, and that action can be bound to a key like any other.
+
+Over a connection the file is opened by something running on that machine, so
+the choices are the terminal editors; the desktop is not offered, because this
+machine cannot open a file on another one.
+
 ## Adding commands
 
 Both ways show up in `apollo <name>`, in the palette, and as something a key

@@ -72,31 +72,7 @@ App::App(Config& config, Options options)
         browser_.refresh(config_.browser());
         syncShell("", browser_.path().string());
     };
-    browser_.onOpenFile = [this](const fs::path& path) {
-        const std::string editor = config_.general().editor.empty()
-                                       ? (std::getenv("EDITOR") ? std::getenv("EDITOR") : "")
-                                       : config_.general().editor;
-        term::Session* session = active();
-        if (!session) return;
-
-        // A file on the far end can only be opened by something running there.
-        if (browser_.remote()) {
-            session->sendText((editor.empty() ? "${EDITOR:-vi}" : editor) + " " +
-                              ssh::quoteRemote(path.string()) + "\r");
-            focus_ = Focus::Terminal;
-            return;
-        }
-        if (!editor.empty()) {
-            session->sendText(editor + " " + process::shellQuote(path.string()) + "\r");
-            focus_ = Focus::Terminal;
-            return;
-        }
-        if (!process::openWithDesktop(path.string())) {
-            say("could not open " + path.filename().string(), true);
-        } else {
-            say("opened " + path.filename().string());
-        }
-    };
+    browser_.onOpenFile = [this](const fs::path& path) { openFile(path); };
 
     browser_.onNeedRemote = [this](const std::string& connection, const std::string& path) {
         askRemote(connection, path, false); // the step is already in the history
@@ -627,6 +603,13 @@ void App::act(const std::string& action, const std::vector<std::string>& args) {
         return;
     }
 
+    if (action == "open_with") {
+        const BrowserView::Entry* entry = browser_.selected();
+        if (!entry || entry->directory) { say("select a file first"); return; }
+        openFile(fs::path(browser_.where()) / entry->name, true);
+        return;
+    }
+
     if (action == "run") {
         if (const Command* command = registry_.find(argument)) runCommand(*command);
         else say("no command called '" + argument + "'", true);
@@ -684,6 +667,112 @@ bool App::runBind(const KeyChord& chord) {
         }
     }
     return false;
+}
+
+// --- opening a file --------------------------------------------------------
+
+void App::runOpener(const std::string& how, const fs::path& path) {
+    term::Session* session = active();
+    if (!session) return;
+
+    const bool remote = browser_.remote();
+    const std::string quoted =
+        remote ? ssh::quoteRemotePath(path.string()) : process::shellQuote(path.string());
+
+    if (how == "desktop") {
+        // Nothing on this machine can open a file on another one.
+        if (remote) {
+            say("that file is on " + browser_.connection() + " — opening it there instead");
+            session->sendText("${EDITOR:-vi} " + quoted + "\r");
+            focus_ = Focus::Terminal;
+            return;
+        }
+        if (process::openWithDesktop(path.string())) say("opened " + path.filename().string());
+        else say("could not open " + path.filename().string(), true);
+        return;
+    }
+
+    std::string program = how;
+    if (how == "editor") {
+        const char* fromEnv = std::getenv("EDITOR");
+        program = !config_.general().editor.empty() ? config_.general().editor
+                  : (fromEnv && *fromEnv)           ? fromEnv
+                  : remote                          ? "${EDITOR:-vi}"
+                                                    : "vi";
+    }
+
+    session->sendText(program + " " + quoted + "\r");
+    focus_ = Focus::Terminal;
+}
+
+void App::openFile(const fs::path& path, bool alwaysAsk) {
+    const OpenRule* rule = config_.openRuleFor(path.filename().string());
+    const std::string how = rule ? rule->how : "ask";
+    if (alwaysAsk || how == "ask") { askHowToOpen(path); return; }
+    runOpener(how, path);
+}
+
+void App::askHowToOpen(const fs::path& path) {
+    const std::string name = path.filename().string();
+    const std::string key = Config::openKeyFor(name);
+
+    struct Choice {
+        std::string title;
+        std::string how;
+        std::string subtitle;
+    };
+    std::vector<Choice> choices;
+
+    const char* fromEnv = std::getenv("EDITOR");
+    const std::string configured = config_.general().editor;
+    if (!configured.empty()) choices.push_back({configured, "editor", "your general.editor"});
+    else if (fromEnv && *fromEnv) choices.push_back({fromEnv, "editor", "your $EDITOR"});
+
+    for (const auto& [program, what] : std::vector<std::pair<std::string, std::string>>{
+             {"vim", "in the terminal"},
+             {"nvim", "in the terminal"},
+             {"nano", "in the terminal"},
+             {"less", "page through it"},
+         }) {
+        if (program == configured) continue;
+        // Locally we can tell what is installed; over a connection we cannot.
+        if (!browser_.remote() && !process::which(program)) continue;
+        choices.push_back({program, program, what});
+    }
+
+    if (!browser_.remote()) {
+        choices.push_back({"Desktop", "desktop", "whatever this machine uses"});
+    }
+
+    std::vector<Palette::Item> items;
+    for (const auto& choice : choices) {
+        std::string subtitle = choice.subtitle;
+        if (!key.empty()) subtitle += " — and for ." + key + " from now on";
+        items.push_back({choice.title, subtitle, "open", "",
+                         [this, path, how = choice.how, key] {
+                             if (!key.empty()) {
+                                 std::string problem;
+                                 if (config_.setOpenRule(key, how) && config_.save(&problem)) {
+                                     say("." + key + " files open with " + how +
+                                         " — Leader , to change it");
+                                 } else if (!problem.empty()) {
+                                     say(problem, true);
+                                 }
+                             }
+                             runOpener(how, path);
+                         }});
+    }
+
+    if (!key.empty()) {
+        items.push_back({"Ask every time", "keep choosing for ." + key + " files", "open", "",
+                         [this, key] {
+                             std::string problem;
+                             config_.setOpenRule(key, "ask");
+                             config_.save(&problem);
+                         }});
+    }
+
+    palette_.open(std::move(items), "Open " + elide(name, 28) + " with");
 }
 
 void App::pickConnection() {

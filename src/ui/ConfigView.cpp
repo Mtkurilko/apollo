@@ -54,7 +54,7 @@ void ConfigView::close() {
 std::vector<ConfigView::Page> ConfigView::pages() const {
     std::vector<Page> list = {Page::General,  Page::Appearance,  Page::Terminal,
                               Page::Browser,  Page::Keys,        Page::Commands,
-                              Page::Connections};
+                              Page::Connections, Page::Openers};
     if (!config_.issues().empty()) list.push_back(Page::Problems);
     list.push_back(Page::About);
     return list;
@@ -69,6 +69,7 @@ std::string ConfigView::pageName(Page page) {
         case Page::Keys:        return "Keys";
         case Page::Commands:    return "Commands";
         case Page::Connections: return "Connections";
+        case Page::Openers:     return "Open with";
         case Page::Problems:    return "Problems";
         case Page::About:       return "About";
     }
@@ -104,6 +105,7 @@ int ConfigView::rowCount() const {
         case Page::Keys:        return static_cast<int>(config_.binds().size());
         case Page::Commands:    return static_cast<int>(config_.commands().size());
         case Page::Connections: return static_cast<int>(config_.connections().size());
+        case Page::Openers:     return static_cast<int>(config_.openRules().size());
         case Page::Problems:    return static_cast<int>(config_.issues().size());
         case Page::About:       return 0;
         default:                return static_cast<int>(settingsFor(page).size());
@@ -200,6 +202,20 @@ void ConfigView::remove() {
         const std::string name = connections[static_cast<std::size_t>(row_)].name;
         if (config_.removeConnection(name) && config_.save(&problem)) {
             flash_ = "removed " + name;
+            row_ = std::max(0, row_ - 1);
+            if (onChanged) onChanged();
+        } else if (!problem.empty()) {
+            error_ = problem;
+        }
+        return;
+    }
+
+    if (page == Page::Openers) {
+        const auto& rules = config_.openRules();
+        if (row_ < 0 || row_ >= static_cast<int>(rules.size())) return;
+        const std::string match = rules[static_cast<std::size_t>(row_)].match;
+        if (config_.removeOpenRule(match) && config_.save(&problem)) {
+            flash_ = "forgot " + (match == "*" ? std::string("the catch-all") : "." + match);
             row_ = std::max(0, row_ - 1);
             if (onChanged) onChanged();
         } else if (!problem.empty()) {
@@ -598,6 +614,48 @@ Element ConfigView::renderKeys(const Theme& theme, int height) {
     });
 }
 
+Element ConfigView::renderOpeners(const Theme& theme, int height) {
+    const auto& rules = config_.openRules();
+    const int visible = std::max(3, height - 3);
+
+    Elements rows;
+    for (int i = 0; i < static_cast<int>(rules.size()) && i < visible; ++i) {
+        const OpenRule& rule = rules[static_cast<std::size_t>(i)];
+        std::string what = rule.match == "*" ? "everything else" : "." + rule.match;
+        what.resize(std::max<std::size_t>(what.size(), 18), ' ');
+
+        const std::string how = rule.how == "desktop" ? "the desktop opener"
+                                : rule.how == "editor" ? "your editor"
+                                : rule.how == "ask"    ? "ask each time"
+                                                       : rule.how;
+
+        Element row = hbox({
+            text(i == row_ ? " ▸ " : "   ") | color(toFtx(theme.accent)),
+            text(what) | color(toFtx(theme.fg)),
+            text(how) | color(toFtx(theme.muted)),
+            filler(),
+        });
+        if (i == row_) row = std::move(row) | bgcolor(toFtx(theme.selection));
+        rows.push_back(spots_.track(kRowBase + i, std::move(row)));
+    }
+    if (rules.empty()) {
+        rows.push_back(text("   nothing remembered yet — Apollo asks the first time")
+                       | color(toFtx(theme.muted)));
+    }
+    while (static_cast<int>(rows.size()) < visible) rows.push_back(text(""));
+
+    return vbox({
+        vbox(std::move(rows)),
+        separator() | color(toFtx(theme.border)),
+        vbox({
+            text("What opening a file from the browser does. d forgets one.") |
+                color(toFtx(theme.fg)),
+            text("  Apollo asks the first time it sees a type, and remembers the answer.") |
+                color(toFtx(theme.muted)),
+        }),
+    });
+}
+
 Element ConfigView::renderCommands(const Theme& theme, int height) {
     const auto& commands = config_.commands();
     const int visible = std::max(3, height - 3);
@@ -772,6 +830,7 @@ Element ConfigView::render(const Theme& theme, const DecorationSettings& decorat
         case Page::Keys:        body = renderKeys(theme, bodyHeight); break;
         case Page::Commands:    body = renderCommands(theme, bodyHeight); break;
         case Page::Connections: body = renderConnections(theme, bodyHeight); break;
+        case Page::Openers:     body = renderOpeners(theme, bodyHeight); break;
         case Page::Problems:    body = renderProblems(theme, bodyHeight); break;
         case Page::About:       body = renderAbout(theme); break;
         default:                body = renderSettings(page, theme, panelWidth, bodyHeight); break;

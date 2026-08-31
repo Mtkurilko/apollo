@@ -74,6 +74,14 @@ struct BrowserSettings {
     }
 };
 
+// What to do when a file is opened from the browser. One rule per extension,
+// plus "*" for the rest; "ask" means put the choice up and remember it.
+struct OpenRule {
+    std::string match; // an extension without the dot, lowercased, or "*"
+    std::string how;   // "ask", "desktop", "editor", or a command line
+    int line = -1;
+};
+
 struct DeclaredCommand {
     std::string name;
     std::string exec;
@@ -105,6 +113,15 @@ public:
     const Theme& theme() const { return theme_; }
     const std::vector<Bind>& binds() const { return binds_; }
     const std::vector<DeclaredCommand>& commands() const { return commands_; }
+    const std::vector<OpenRule>& openRules() const { return open_; }
+    // The rule for a filename: its extension, else "*", else nothing.
+    const OpenRule* openRuleFor(const std::string& filename) const;
+    // The extension a rule would be remembered under, empty when there is none.
+    static std::string openKeyFor(const std::string& filename);
+    // The same value as a rule writes it: "md", ".MD" and "*" all normalise.
+    static std::string openMatch(const std::string& text);
+    bool setOpenRule(const std::string& match, const std::string& how);
+    bool removeOpenRule(const std::string& match);
     const std::vector<Connection>& connections() const { return connections_; }
     const Connection* connection(const std::string& name) const;
 
@@ -170,6 +187,7 @@ private:
     Theme theme_;
     std::vector<Bind> binds_;
     std::vector<DeclaredCommand> commands_;
+    std::vector<OpenRule> open_;
     std::vector<Connection> connections_;
     std::vector<std::string> issues_;
 };
