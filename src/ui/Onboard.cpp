@@ -117,7 +117,7 @@ void Onboard::advance() {
                     }
                 }
                 conn.keyPath = connectionKey_.text;
-                // Only one of the two: a key makes the password dead weight.
+                // One or the other. A key makes the password dead weight.
                 if (conn.keyPath.empty()) conn.password = connectionPassword_.text;
 
                 std::string problem;
@@ -250,8 +250,8 @@ bool Onboard::onKey(const KeyChord& chord, const std::string& raw) {
                 return true;
             }
             if (chord.key == "enter") {
-                // A key means the password below it will not be used, so
-                // Enter on the key field finishes the step.
+                // A key means the password below never gets used, so Enter on
+                // the key field just finishes the step.
                 if (connectionField_ == 4 && !connectionKey_.text.empty()) { advance(); return true; }
                 if (connectionField_ < kConnectionFields - 1) ++connectionField_;
                 else advance();
@@ -285,7 +285,7 @@ bool Onboard::onKey(const KeyChord& chord, const std::string& raw) {
 }
 
 namespace {
-// Hotspot ids. Themes and connection fields take a small range each.
+// Hotspot ids. Themes and connection fields each get a small range.
 constexpr int kNext = 1;
 constexpr int kBack = 2;
 constexpr int kSkip = 3;
@@ -491,7 +491,7 @@ Element Onboard::render(const Theme& theme, const DecorationSettings& decoration
                 }),
                 text(""),
                 note(shellRcFile().empty()
-                         ? "Your shell was not recognised; the snippet will just be written out."
+                         ? "Your shell was not recognized; the snippet will just be written out."
                          : "It would go in " + paths::contractUser(shellRcFile()) + "."),
             };
             footer = {hint("y / n", "choose", theme), text("   "),

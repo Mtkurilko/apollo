@@ -30,14 +30,14 @@ void addSharedOptions(std::vector<std::string>& argv, const Connection& conn,
     if (!conn.keyPath.empty()) {
         argv.push_back("-i");
         argv.push_back(paths::expandUser(conn.keyPath));
-        // With a key configured, do not silently fall back to typing a password.
+        // Key configured, so don't quietly fall back to asking for a password.
         argv.push_back("-o"); argv.push_back("IdentitiesOnly=yes");
     }
     if (!conn.jump.empty()) { argv.push_back("-J"); argv.push_back(conn.jump); }
     if (conn.forwardAgent) argv.push_back("-A");
 }
 
-// Prefixes sshpass when, and only when, the connection actually needs it.
+// Only reaches for sshpass when the connection actually needs it.
 Invocation begin(const Connection& conn) {
     if (conn.usesPassword()) {
         return {{"sshpass", "-e", "ssh"}, {"SSHPASS=" + conn.password}};
@@ -62,8 +62,8 @@ std::string quoteRemotePath(const std::string& path) {
     if (path.empty()) return "''";
     if (path[0] != '~') return quoteRemote(path);
 
-    // Only a plain ~ or ~name is left bare; anything else in that first
-    // segment could be something the remote shell would rather not run.
+    // Only a plain ~ or ~name goes through bare. Anything else in there could
+    // be something we really don't want the remote shell running.
     const std::size_t slash = path.find('/');
     const std::string head = path.substr(0, slash);
     for (std::size_t i = 1; i < head.size(); ++i) {
@@ -80,9 +80,9 @@ Invocation interactive(const Connection& conn) {
     call.argv.push_back("-t"); // force a pty, so vim and friends work over the link
     call.argv.push_back(conn.label());
 
-    // The shell reports its pid on the way in, so the browser can ask the
-    // machine where that shell is without anything being installed on it.
-    // exec keeps the pid, so $$ here is the interactive shell's.
+    // Shell reports its pid on the way in. Lets the browser ask the machine
+    // where that shell is without installing anything over there.
+    // exec keeps the pid, so $$ here is already the interactive shell's.
     std::string start = "printf '\\033]777;apollo;pid;%s\\033\\\\' $$; ";
     if (!conn.remoteDir.empty()) {
         start += "cd " + quoteRemotePath(conn.remoteDir) + " 2>/dev/null; ";
@@ -106,37 +106,6 @@ void closeMaster(const Connection& conn) {
     std::vector<std::string> argv = {"ssh", "-o", "ControlPath=" + controlPath(conn),
                                      "-O", "exit", conn.label()};
     process::run(argv, std::chrono::seconds(3));
-}
-
-Probe probe(const Connection& conn, int timeoutSeconds) {
-    if (!conn.valid()) return {false, "missing host or user"};
-
-    if (conn.usesPassword() && !process::which("sshpass")) {
-        return {false, "sshpass is not installed, and this connection uses a password"};
-    }
-    if (!conn.keyPath.empty()) {
-        const std::string key = paths::expandUser(conn.keyPath);
-        if (::access(key.c_str(), R_OK) != 0) return {false, "cannot read key " + conn.keyPath};
-    }
-
-    auto call = command(conn, "true");
-    for (std::size_t i = 0; i + 1 < call.argv.size(); ++i) {
-        if (call.argv[i + 1].rfind("ConnectTimeout=", 0) == 0) {
-            call.argv[i + 1] = "ConnectTimeout=" + std::to_string(timeoutSeconds);
-        }
-    }
-
-    const auto result = process::run(call.argv, std::chrono::seconds(timeoutSeconds + 4),
-                                     "", call.env);
-    if (result.timedOut) return {false, "timed out after " + std::to_string(timeoutSeconds) + "s"};
-    if (result.ok()) return {true, "reachable"};
-
-    std::string message = result.err.empty() ? "ssh exited " + std::to_string(result.exitCode)
-                                             : result.err;
-    if (const auto newline = message.find('\n'); newline != std::string::npos) {
-        message.resize(newline);
-    }
-    return {false, message};
 }
 
 } // namespace ssh

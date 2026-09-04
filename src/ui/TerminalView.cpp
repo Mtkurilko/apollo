@@ -71,7 +71,7 @@ Element renderTerminal(const Session& session,
     int selFromLine = 0, selFromCol = 0, selToLine = -1, selToCol = 0;
     const bool hasSelection = !session.selection.empty();
     if (hasSelection) {
-        session.selection.normalised(selFromLine, selFromCol, selToLine, selToCol);
+        session.selection.normalized(selFromLine, selFromCol, selToLine, selToCol);
     }
 
     const bool liveCursor = options.focused && screen.cursorVisible() &&
@@ -141,7 +141,7 @@ Element renderTerminal(const Session& session,
             const bool onCursor = absolute == cursorLine && x == screen.cursorX();
             if (onCursor && ghostCursor) std::swap(style.fg, style.bg);
 
-            // The cursor is its own run; merging it into a neighbour would lose it.
+            // Cursor gets its own run. Merge it into a neighbor and it's gone.
             const bool isCursor = onCursor && (liveCursor || ghostCursor);
             if (!started || !(style == current) || isCursor) {
                 flush();

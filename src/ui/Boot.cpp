@@ -10,7 +10,7 @@ using namespace ftxui;
 
 namespace {
 
-// Assembled per letter so the rows cannot drift out of alignment.
+// Built per letter so the rows can't drift out of alignment.
 const std::vector<std::string>& glyph(char letter) {
     static const std::vector<std::string> a = {
         " █████╗ ", "██╔══██╗", "███████║", "██╔══██║", "██║  ██║", "╚═╝  ╚═╝",
@@ -40,7 +40,7 @@ constexpr int kLinesDone = 700;
 constexpr int kHoldDone = 900;
 constexpr int kStaticDone = 450; // when animation is off
 
-// First `columns` display columns, so the wipe crosses multi-byte letters cleanly.
+// First `columns` display columns. Keeps the wipe clean across multi-byte letters.
 std::string prefixColumns(const std::string& row, int columns) {
     if (columns <= 0) return "";
     std::string out;

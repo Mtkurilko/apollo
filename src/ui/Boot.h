@@ -1,4 +1,4 @@
-// Splash screen. Skippable, and never delays the shell starting.
+// Splash screen. Skippable, and never holds up the shell starting.
 #pragma once
 
 #include <chrono>
@@ -25,7 +25,7 @@ public:
     ftxui::Element render(const Theme& theme, const DecorationSettings& decoration,
                           int width, int height) const;
 
-    // The word, in block letters, as one string per row.
+    // The word in block letters, one string per row.
     static const std::vector<std::string>& mark();
     static int markWidth();
 

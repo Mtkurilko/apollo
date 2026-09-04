@@ -1,5 +1,5 @@
-// Commands: built in, declared in the config, or executables dropped into
-// ~/.apollo/commands. Plus the fuzzy matcher the palette uses.
+// Commands. Built in, declared in the config, or executables dropped into
+// ~/.apollo/commands. Also the fuzzy matcher the palette uses.
 #pragma once
 
 #include <filesystem>
@@ -9,7 +9,7 @@
 
 namespace apollo {
 
-// fzf-style subsequence match; word boundaries score higher.
+// fzf-style subsequence match. Word boundaries score higher.
 namespace fuzzy {
 std::optional<int> score(const std::string& haystack,
                          const std::string& needle,

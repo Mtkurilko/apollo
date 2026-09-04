@@ -21,7 +21,7 @@ namespace {
 
 constexpr std::size_t kMaxMessage = 4096;
 
-// AF_UNIX paths cap near 104 bytes on macOS and fail silently, so keep it short.
+// AF_UNIX paths cap around 104 bytes on macOS and fail silently. Keep it short.
 std::string socketPathFor(pid_t pid) {
     return "/tmp/apollo." + std::to_string(::getuid()) + "." + std::to_string(pid) + ".sock";
 }
@@ -48,7 +48,7 @@ void removeAbandonedSockets() {
 
         const std::string middle = name.substr(prefix.size());
         const int pid = std::atoi(middle.c_str());
-        // Signal 0 asks whether the process exists without disturbing it.
+        // Signal 0 just asks if the process exists, doesn't disturb it.
         if (pid > 0 && ::kill(static_cast<pid_t>(pid), 0) == 0) continue;
         if (pid > 0 && errno == EPERM) continue; // alive, just not ours
         fs::remove(entry.path(), ec);
@@ -65,7 +65,7 @@ bool ControlServer::start(std::function<void()> wake, std::string* error) {
 
     removeAbandonedSockets();
 
-    // A socket left behind by a crash would refuse the bind.
+    // A socket left over from a crash would refuse the bind.
     std::error_code ec;
     fs::remove(path_, ec);
 
@@ -82,7 +82,7 @@ bool ControlServer::start(std::function<void()> wake, std::string* error) {
         return false;
     }
 
-    // Owner-only, decided before the socket exists rather than after.
+    // Owner-only, set before the socket exists rather than after.
     const mode_t previous = ::umask(0077);
     const int bound = ::bind(fd_, reinterpret_cast<sockaddr*>(&address), sizeof(address));
     ::umask(previous);
@@ -168,7 +168,7 @@ bool send(const std::string& socketPath, const std::string& message) {
     if (fd < 0) return false;
 
     if (::connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
-        // Nothing listening: a stale file from an instance that is gone.
+        // Nothing listening. Stale file from an instance that's gone.
         ::close(fd);
         return false;
     }

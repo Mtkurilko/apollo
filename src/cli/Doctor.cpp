@@ -70,14 +70,14 @@ int doctor(Config& config) {
     if (const char* term = std::getenv("TERM"); term && *term) {
         ok(std::string("TERM is ") + term);
     } else {
-        warn("TERM is not set; colours may be wrong");
+        warn("TERM is not set; colors may be wrong");
     }
     if (::isatty(STDOUT_FILENO)) ok("running on a terminal");
     else warn("standard output is not a terminal; apollo needs one to draw");
 
     const char* colorterm = std::getenv("COLORTERM");
     if (colorterm && std::string(colorterm).find("truecolor") != std::string::npos) {
-        ok("24 bit colour available");
+        ok("24 bit color available");
     } else {
         warn("COLORTERM does not advertise truecolor; themes will be approximated",
              "most modern terminals set this themselves");

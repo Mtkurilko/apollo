@@ -84,12 +84,12 @@ then press the key. Anything not listed goes to the program in the terminal.
 
 Drag to select and the selection is copied. The wheel scrolls, double click
 opens, click a tab to switch. The palette, the settings editor and the wizard
-all take the mouse too — click a row to pick it, a section tab to move, a
+all take the mouse too; click a row to pick it, a section tab to move, a
 setting twice to change it. Every key is a line in the config, and `unbind`
 removes any of them.
 
-Keys that rearrange the panes — show the browser, stack it, resize it, show
-dotfiles — write to the config as they go, so the layout comes back next time.
+Keys that rearrange the panes (show the browser, stack it, resize it, show
+dotfiles) write to the config as they go, so the layout comes back next time.
 
 ## The browser
 
@@ -105,7 +105,7 @@ Two ways to find something:
   entries are left.
 
 The columns depend on the width: names when narrow, then sizes and git status,
-then dates. Files are coloured and marked by type, and the line underneath
+then dates. Files are colored and marked by type, and the line underneath
 shows permissions, size and mtime for whatever is selected.
 
 `browser.sort` cycles name, size, modified and type; `browser.sort_reverse`
@@ -129,10 +129,10 @@ there, over a socket each instance creates for the shells it starts:
 | `apollo quit` | Quit |
 | `apollo config` | Open the settings |
 | `apollo new-tab` | Another terminal tab |
-| `apollo connect lab` | Another tab, connected |
+| `apollo connect [remote-name]` | Another tab, connected |
 | `apollo disconnect` | Put this tab back on the local machine |
 
-Everything else — `apollo doctor`, `apollo config list`, your own commands —
+Everything else (`apollo doctor`, `apollo config list`, or your own commands)
 prints in the terminal where you typed it.
 
 The socket lives in `/tmp`, is named for your user and pid, and is owner-only.
@@ -149,8 +149,9 @@ and alignment where they are.
 $accent = #7aa2f7
 
 general {
-    workspace  = ~/src
-    follow_cwd = true          # the browser follows your shell
+    workspace    = ~/src
+    follow_cwd   = true        # the browser follows your shell
+    confirm_quit = true        # ask before leaving mid-command
 }
 
 decoration {
@@ -162,7 +163,7 @@ decoration {
 }
 
 colors {
-    accent = $accent           # override any theme colour
+    accent = $accent           # override any theme color
 }
 
 browser {
@@ -184,9 +185,9 @@ A sourced file supplies defaults; your own file overrides them wherever the
 
 ### Themes
 
-Seven built in: `apollo`, `midnight`, `nord`, `gruvbox`, `catppuccin`,
-`solarized`, `paper`. Your own is a file in `~/.apollo/themes` — a base plus
-whatever you change:
+Seven built in (widely selected from inspiration): `apollo`, `midnight`, 
+`nord`, `gruvbox`, `catppuccin`, `solarized`, `paper`. Your own is a file 
+in `~/.apollo/themes` — a base plus whatever you change:
 
 ```conf
 # ~/.apollo/themes/sunset.conf
@@ -204,11 +205,12 @@ apollo config set decoration.theme sunset
 ```
 
 It shows up in the palette and the settings editor next to the built-in ones.
-Colours are `#rrggbb`, `#rgb`, `rgb(r, g, b)` or a name. The sixteen ANSI
-colours handed to programs are derived from the same palette, so `ls` and
+Colors are `#rrggbb`, `#rgb`, `rgb(r, g, b)` or a name. The sixteen ANSI
+colors handed to programs are derived from the same palette, so `ls` and
 `git diff` match the rest of the window.
 
-`apollo config` with no arguments opens an editor with every setting, what it
+`apollo config` (inspired by Claude Code's /config as I think it's effective) 
+with no arguments opens an editor with every setting, what it
 does, what it accepts and its default:
 
 ```
@@ -222,9 +224,9 @@ does, what it accepts and its default:
 │   Gaps                  1                                                  │
 │   Animate               ● on                                               │
 │   Dim inactive pane     ● on                                               │
-│   Colour: Accent        ██ #7aa2f7                                       • │
+│   Color: Accent        ██ #7aa2f7                                       • │
 ├────────────────────────────────────────────────────────────────────────────┤
-│ Colour scheme, built in or a file in ~/.apollo/themes  —  apollo · nord ·…  │
+│ Color scheme, built in or a file in ~/.apollo/themes  —  apollo · nord ·…  │
 │   decoration.theme   default: apollo   d resets it                         │
 ├────────────────────────────────────────────────────────────────────────────┤
 │  Tab   section   ↑↓   move   Enter   change   e   editor   Esc   close      │
@@ -311,7 +313,7 @@ $ apollo commands
 ## SSH
 
 `apollo connect` spawns a real `ssh` inside the pty, so a remote session is a
-normal one — full screen programs, signals, colours. Connections share a
+normal one — full screen programs, signals, colors. Connections share a
 control socket, so the second one is a round trip rather than a handshake.
 
 The browser follows. While a tab is connected the pane lists the machine that
@@ -412,10 +414,3 @@ keystrokes, and prints what it painted:
 ```bash
 python3 scripts/drive.py --cols 96 --rows 24 '<leader>' '<space>' 'theme' -- .
 ```
-
-## Upgrading from 0.2
-
-The first run converts `~/.apollo/config.properties` to the new format and
-leaves the old file alone. Connections, the workspace and the default
-destination carry across. The 0.1 `apollo.properties`, which held a single
-host, becomes the connection named `default`.

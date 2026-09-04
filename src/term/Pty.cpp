@@ -96,7 +96,7 @@ bool Pty::start(const Launch& launch, int rows, int cols, std::string* error) {
         for (const auto& arg : launch.argv) argv.push_back(const_cast<char*>(arg.c_str()));
         argv.push_back(nullptr);
 
-        // macOS has no execvpe; replacing environ before execvp is the equivalent.
+        // No execvpe on macOS. Replacing environ before execvp does the same thing.
         environ = envp.data();
         ::execvp(argv[0], argv.data());
         ::_exit(127);
@@ -107,7 +107,7 @@ bool Pty::start(const Launch& launch, int rows, int cols, std::string* error) {
     exited_ = false;
     exitCode_ = 0;
 
-    // Non-blocking: the UI thread drains each frame and never waits on the child.
+    // Non-blocking. The UI thread drains each frame and never waits on the child.
     const int flags = ::fcntl(fd_, F_GETFL, 0);
     ::fcntl(fd_, F_SETFL, (flags < 0 ? 0 : flags) | O_NONBLOCK);
     ::fcntl(fd_, F_SETFD, FD_CLOEXEC);
@@ -167,6 +167,14 @@ bool Pty::poll() {
 
 void Pty::signal(int number) {
     if (pid_ > 0 && !exited_) ::kill(-pid_, number);
+}
+
+bool Pty::foregroundBusy() const {
+    if (fd_ < 0 || pid_ <= 0 || exited_) return false;
+    // forkpty made the child a session leader, so its process group is its pid.
+    // Anything else in the foreground got started by it.
+    const pid_t group = ::tcgetpgrp(fd_);
+    return group > 0 && group != pid_;
 }
 
 void Pty::terminate() {

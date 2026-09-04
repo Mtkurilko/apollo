@@ -1,4 +1,4 @@
-// The file browser. Shows more as it is given more room.
+// The file browser. Shows more columns the more room it gets.
 #pragma once
 
 #include <chrono>
@@ -37,13 +37,13 @@ public:
     const std::filesystem::path& path() const { return path_; }
 
     // --- the other end of a connection ------------------------------------
-    // The pane shows one machine at a time. Remote listings arrive from
-    // outside rather than being read here, since they take a round trip.
+    // One machine at a time. Remote listings get handed in from outside
+    // instead of being read here, since they cost a round trip.
     bool remote() const { return !connection_.empty(); }
     const std::string& connection() const { return connection_; }
-    // Where the pane is pointed, which is a remote path while connected.
+    // Where the pane is pointed. A remote path while connected.
     std::string where() const { return remote() ? remotePath_ : path_.string(); }
-    // Points the pane at a directory on `connection` and marks it as loading.
+    // Points the pane at a directory on `connection` and marks it loading.
     void expectRemote(const std::string& connection, const std::string& path,
                       bool record = true);
     void showRemote(const remote::Listing& listing, const BrowserSettings& settings);
@@ -57,7 +57,8 @@ public:
     bool goUp(const BrowserSettings& settings);
 
     void refresh(const BrowserSettings& settings);
-    void refreshIfStale(const BrowserSettings& settings);
+    // True when it actually re-read or re-sorted, so callers know the pane moved.
+    bool refreshIfStale(const BrowserSettings& settings);
 
     // --- filtering --------------------------------------------------------
     bool filtering() const { return filtering_; }
@@ -70,8 +71,8 @@ public:
     bool onFilterKey(const KeyChord& chord, const std::string& raw,
                      const BrowserSettings& settings);
 
-    // --- input ------------------------------------------------------------ Returns true
-    // when the key was the browser's to handle.
+    // --- input ------------------------------------------------------------
+    // Returns true when the key was the browser's to handle.
     bool onKey(const KeyChord& chord, const BrowserSettings& settings);
     bool onClick(int row, int column, bool doubleClick, const BrowserSettings& settings);
     Hit hitTest(int row, int column, const BrowserSettings& settings) const;
@@ -92,14 +93,13 @@ public:
     std::string statusLine() const;
 
     std::function<void(const std::filesystem::path&)> onEnterDirectory;
-    // Asked when the pane needs a directory from the other end of a
-    // connection, which it cannot read for itself.
+    // Asked when the pane needs a remote directory, which it can't read itself.
     std::function<void(const std::string& connection, const std::string& path)> onNeedRemote;
-    // Fired when the pane moves itself — back and forward — so the shell can
-    // be taken along. Entering a directory goes through onEnterDirectory.
+    // Fires when the pane moves itself (back/forward) so the shell can come
+    // along. Entering a directory goes through onEnterDirectory instead.
     std::function<void(const std::string& connection, const std::string& path)> onMoved;
     std::function<void(const std::filesystem::path&)> onOpenFile;
-    // The toolbar's own buttons, for the ones the app owns.
+    // Toolbar buttons the app owns rather than the browser.
     std::function<void()> onCopyPath;
     std::function<void()> onCycleSort;
 
@@ -121,8 +121,8 @@ private:
 
     std::filesystem::path path_ = std::filesystem::current_path();
 
-    // History remembers which machine each step was on, so back and forward
-    // still work across a connect.
+    // History remembers which machine each step was on. Back/forward still
+    // work across a connect that way.
     struct Step {
         std::string connection;
         std::string path;
@@ -145,7 +145,7 @@ private:
     std::string find_;
     std::chrono::steady_clock::time_point findAt_{};
 
-    // Set by render() rather than by anyone calling in.
+    // render() sets these, not callers.
     mutable int scroll_ = 0;
     mutable int lastHeight_ = 20;
     mutable int lastWidth_ = 34;
@@ -158,7 +158,7 @@ private:
 
     std::filesystem::file_time_type stamp_{};
     std::chrono::steady_clock::time_point lastCheck_{};
-    // Repository root for the current directory, empty when there is none.
+    // Repo root for the current directory. Empty if there isn't one.
     std::filesystem::path gitRoot_;
     std::map<std::string, char> gitStatus_;
 };

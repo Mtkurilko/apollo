@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
+#include <utility>
 
 #include <ftxui/component/event.hpp>
 #include <ftxui/screen/terminal.hpp>
@@ -22,12 +23,17 @@ using namespace ftxui;
 
 namespace {
 
-const Event kTick = Event::Special("apollo:tick");
-const Event kOutput = Event::Special("apollo:output");
+// Posted only when a beat found something worth showing. FTXUI invalidates
+// the frame for every event it handles, which is the whole point of it.
+const Event kRepaint = Event::Special("apollo:repaint");
 const Event kControl = Event::Special("apollo:control");
 const Event kRemote = Event::Special("apollo:remote");
 
-// Just enough base64 to receive an OSC 52 clipboard payload.
+// The two answers to a confirmation. Shared by the renderer and the click handler.
+constexpr int kConfirmYes = 1;
+constexpr int kConfirmNo = 2;
+
+// Just enough base64 to read an OSC 52 clipboard payload.
 std::string decodeBase64(const std::string& text) {
     static const std::string alphabet =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -64,7 +70,7 @@ App::App(Config& config, Options options)
         if (browser_.remote()) {
             const std::string connection = browser_.connection();
             askRemote(connection, path.string());
-            // Keep the shell in step, so both panes agree on the directory.
+            // Move the shell too, or the panes disagree about where we are.
             syncShell(connection, path.string());
             return;
         }
@@ -81,7 +87,7 @@ App::App(Config& config, Options options)
         syncShell(connection, path);
     };
     browser_.onCopyPath = [this] {
-        // Remote paths copy in scp form, which is what they are useful as.
+        // Copy remote paths in scp form. That's what you'd actually paste.
         if (const Connection* conn = config_.connection(browser_.connection())) {
             copyToClipboard(conn->label() + ":" + browser_.where());
             return;
@@ -171,8 +177,7 @@ std::unique_ptr<term::Session> App::makeSession(const Connection* connection,
 
     term::Session::Options options;
     options.scrollback = config_.terminal().scrollback;
-    // A local shell cannot start in a directory that only exists on the far
-    // end of a connection.
+    // Can't start a local shell in a directory that only exists on the remote.
     options.cwd = browser_.remote() ? paths::expandUser(config_.general().workspace)
                                     : browser_.path().string();
     if (control_.running()) options.env.push_back("APOLLO_SOCKET=" + control_.path());
@@ -192,9 +197,15 @@ std::unique_ptr<term::Session> App::makeSession(const Connection* connection,
 
     if (!session->start(options, error)) return nullptr;
 
-    session->setWakeup([this] { screen_.PostEvent(kOutput); });
+    session->setWakeup([this] {
+        screen_.Post([this] {
+            bool changed = false;
+            for (auto& tab : tabs_) changed |= tab->pump();
+            if (changed) screen_.PostEvent(kRepaint);
+        });
+    });
     session->onClipboard = [this](const std::string& base64) {
-        // OSC 52: the program asking to set the clipboard.
+        // OSC 52. The program wants to set the clipboard.
         if (!config_.terminal().osc52Clipboard) return;
         const std::string payload = decodeBase64(base64);
         if (payload.empty()) return;
@@ -240,7 +251,7 @@ bool App::retarget(int index, const Connection* connection) {
 void App::syncShell(const std::string& connection, const std::string& path) {
     term::Session* session = active();
     if (!session) return;
-    // Only ever cd a shell that is on the same machine as the pane.
+    // Only cd a shell that's on the same machine as the pane.
     if (session->connection() != connection) return;
 
     if (!connection.empty()) {
@@ -262,16 +273,18 @@ void App::askRemote(const std::string& connection, const std::string& path, bool
 
     browser_.expectRemote(connection, path, record);
     remoteLister_.request(*conn, path, shellPid);
+    invalidate();
 }
 
-// The pane shows the machine the active tab is on. Switching tabs, connecting
-// and disconnecting all end up here rather than each doing their own thing.
+// Pane shows whatever machine the active tab is on.
+// Tab switches, connects and disconnects all funnel through here.
 void App::followActiveMachine() {
     const term::Session* session = active();
     const std::string wanted = session ? session->connection() : std::string();
     if (wanted == shownMachine_) return;
     shownMachine_ = wanted;
     followedCwd_.clear();
+    invalidate(); // past here the pane always gets repointed
 
     if (wanted.empty()) {
         const fs::path home(paths::expandUser(config_.general().workspace));
@@ -283,7 +296,7 @@ void App::followActiveMachine() {
 
     const Connection* conn = config_.connection(wanted);
     if (!conn) {
-        // The connection was edited out of the config while a tab was on it.
+        // Connection got edited out of the config while a tab was still on it.
         if (abandonedConnection_ != wanted) {
             abandonedConnection_ = wanted;
             browser_.backToLocal(paths::home(), config_.browser());
@@ -299,7 +312,7 @@ void App::followActiveMachine() {
 
 void App::releaseConnection(const std::string& name) {
     if (name.empty()) return;
-    // Another tab may still be riding the same master.
+    // Another tab might still be riding the same master.
     for (const auto& session : tabs_) {
         if (session->connection() == name) return;
     }
@@ -356,10 +369,20 @@ App::Layout App::measure() const {
 
 // --- actions ---------------------------------------------------------------
 
+const term::Session* App::busyTab() const {
+    for (const auto& session : tabs_) {
+        if (session->running() && session->busy()) return session.get();
+    }
+    return nullptr;
+}
+
+void App::askConfirm(Confirmation question) { confirm_ = std::move(question); }
+
 void App::say(const std::string& message, bool isError) {
     status_ = message;
     statusIsError_ = isError;
     statusUntil_ = std::chrono::steady_clock::now() + std::chrono::seconds(isError ? 8 : 4);
+    invalidate();
 }
 
 void App::copyToClipboard(const std::string& text) {
@@ -470,7 +493,7 @@ void App::act(const std::string& action, const std::vector<std::string>& args) {
         }
         if (wanted.empty()) { say("the clipboard is empty"); return; }
 
-        // copy_path writes remote paths in scp form, so accept them back.
+        // copy_path writes scp form, so take it back that way too.
         if (const Connection* conn = config_.connection(browser_.connection())) {
             const std::string prefix = conn->label() + ":";
             if (wanted.rfind(prefix, 0) == 0) wanted.erase(0, prefix.size());
@@ -521,7 +544,19 @@ void App::act(const std::string& action, const std::vector<std::string>& args) {
     if (action == "open_config") { configView_.open(); return; }
     if (action == "setup") { onboard_.start(); return; }
     if (action == "help") { helpOpen_ = true; return; }
-    if (action == "quit") { quitting_ = true; screen_.Exit(); return; }
+    if (action == "quit") {
+        if (config_.general().confirmQuit) {
+            if (const term::Session* running = busyTab()) {
+                askConfirm({"Something is still running in " + running->title() + ".",
+                            "Leaving now stops it.",
+                            [this] { quitting_ = true; screen_.Exit(); }});
+                return;
+            }
+        }
+        quitting_ = true;
+        screen_.Exit();
+        return;
+    }
     if (action == "reload_config") {
         config_.load();
         applyConfig();
@@ -573,8 +608,8 @@ void App::act(const std::string& action, const std::vector<std::string>& args) {
         std::string error;
         const auto conn = config_.resolveConnection(argument, error);
         if (!conn) {
-            // Several are configured and none was named: show them rather
-            // than telling the reader to go and look them up.
+            // Several configured and none named. Show them instead of telling
+            // you to go look them up.
             if (argument.empty() && config_.connections().size() > 1) {
                 pickConnection();
                 return;
@@ -591,8 +626,8 @@ void App::act(const std::string& action, const std::vector<std::string>& args) {
         if (session->connection().empty()) { say("this tab is already local"); return; }
         const std::string was = session->connection();
 
-        // A tab that was opened to hold a connection goes when the connection
-        // does — unless it is the only one, where that would close Apollo.
+        // Tab opened for a connection goes away with it. Unless it's the only
+        // tab, since that would quit Apollo out from under you.
         if (config_.general().disconnectClosesTab && tabs_.size() > 1) {
             closeTab(tab_);
         } else if (!retarget(tab_, nullptr)) {
@@ -680,7 +715,7 @@ void App::runOpener(const std::string& how, const fs::path& path) {
         remote ? ssh::quoteRemotePath(path.string()) : process::shellQuote(path.string());
 
     if (how == "desktop") {
-        // Nothing on this machine can open a file on another one.
+        // This machine can't open a file that lives on another one.
         if (remote) {
             say("that file is on " + browser_.connection() + " — opening it there instead");
             session->sendText("${EDITOR:-vi} " + quoted + "\r");
@@ -735,7 +770,7 @@ void App::askHowToOpen(const fs::path& path) {
              {"less", "page through it"},
          }) {
         if (program == configured) continue;
-        // Locally we can tell what is installed; over a connection we cannot.
+        // Locally we can check what's installed. Over ssh we can't.
         if (!browser_.remote() && !process::which(program)) continue;
         choices.push_back({program, program, what});
     }
@@ -811,7 +846,7 @@ void App::openPalette() {
     }
 
     for (const auto& name : Config::availableThemes()) {
-        items.push_back({"Theme: " + name, "Switch the colour scheme", "theme", "",
+        items.push_back({"Theme: " + name, "Switch the color scheme", "theme", "",
                          [this, name] {
                              std::string problem;
                              if (config_.set("decoration.theme", name, &problem) &&
@@ -829,17 +864,35 @@ void App::openPalette() {
 
 // --- events ----------------------------------------------------------------
 
-void App::tick() {
-    const auto now = std::chrono::steady_clock::now();
-    if (config_.reloadIfChanged()) {
-        applyConfig();
-        say("reloaded " + paths::contractUser(config_.path()));
-    }
-    if (browserVisible()) browser_.refreshIfStale(config_.browser());
+std::chrono::milliseconds App::tickInterval() const {
+    // The only reasons to beat quickly are things that move on their own.
+    if (boot_.running() || browser_.loading()) return std::chrono::milliseconds(100);
 
-    // A remote listing costs a round trip, so it is asked for on a slow beat
-    // rather than the local pane's directory-mtime poll — and once shortly
-    // after the terminal settles, which is when a cd has just happened.
+    const term::Session* session = active();
+    if (session && session->commandRunning()) {
+        // The spinner needs a frame rate. Without it there is only the elapsed
+        // seconds to keep up with.
+        return std::chrono::milliseconds(config_.decoration().animate ? 100 : 500);
+    }
+    return std::chrono::milliseconds(250);
+}
+
+bool App::tick() {
+    const auto now = std::chrono::steady_clock::now();
+
+    // Two stats. Worth doing often enough to feel live, not ten times a second.
+    if (now - configCheckedAt_ > std::chrono::seconds(1)) {
+        configCheckedAt_ = now;
+        if (config_.reloadIfChanged()) {
+            applyConfig();
+            say("reloaded " + paths::contractUser(config_.path()));
+        }
+    }
+    if (browserVisible() && browser_.refreshIfStale(config_.browser())) invalidate();
+
+    // A remote listing is a round trip, so it gets a slow beat instead of the
+    // local mtime poll. Plus one right after the terminal settles, which is
+    // when a cd has usually just happened.
     if (const term::Session* session = active(); session && !session->connection().empty()) {
         const std::uint64_t revision = session->screen().revision();
         if (revision != lastRevision_) {
@@ -861,16 +914,18 @@ void App::tick() {
         if (config_.terminal().bell) say("bell — " + session->title());
     }
 
-    for (auto& session : tabs_) session->pump();
+    for (auto& session : tabs_) {
+        if (session->pump()) invalidate();
+    }
 
     followActiveMachine();
 
     if (config_.general().followCwd) {
         if (term::Session* session = active(); session && !session->cwd().empty()) {
-            // A connected shell reports a path on the far end, which would be
-            // meaningless — or worse, coincidentally real — as a local one.
-            // Only follow a shell the pane is actually looking at: having
-            // browsed somewhere else is not a reason to be dragged back.
+            // A connected shell reports a remote path. Treating that as local
+            // is meaningless, or worse, accidentally a real local directory.
+            // Only follow a shell the pane is actually pointed at. Browsing
+            // somewhere else shouldn't get yanked back.
             if (!session->connection().empty()) {
                 if (browser_.connection() == session->connection() &&
                     session->cwd() != browser_.where() && session->cwd() != followedCwd_ &&
@@ -880,9 +935,13 @@ void App::tick() {
                 }
             } else if (!browser_.remote()) {
                 std::error_code ec;
-                const fs::path reported = fs::weakly_canonical(session->cwd(), ec);
+                if (session->cwd() != lastShellCwd_) {
+                    lastShellCwd_ = session->cwd();
+                    lastShellCwdResolved_ = fs::weakly_canonical(lastShellCwd_, ec);
+                }
+                const fs::path& reported = lastShellCwdResolved_;
 
-                // Ignore the shell's cwd until it catches up with a cd we asked for.
+                // Ignore the shell's cwd until it catches up with our cd.
                 if (!pendingCwd_.empty()) {
                     if (reported == pendingCwd_ ||
                         std::chrono::steady_clock::now() > pendingCwdUntil_) {
@@ -891,12 +950,16 @@ void App::tick() {
                 } else if (reported != browser_.path() && fs::is_directory(reported, ec)) {
                     browser_.setPath(reported);
                     browser_.refresh(config_.browser());
+                    invalidate();
                 }
             }
         }
     }
 
-    if (!status_.empty() && now > statusUntil_) status_.clear();
+    if (!status_.empty() && now > statusUntil_) {
+        status_.clear();
+        invalidate();
+    }
 
     for (int i = static_cast<int>(tabs_.size()) - 1; i >= 0; --i) {
         auto& session = tabs_[static_cast<std::size_t>(i)];
@@ -904,12 +967,21 @@ void App::tick() {
 
         if (session->exitCode() == 0 || tabs_.size() > 1) {
             closeTab(i);
+            invalidate();
         } else if (status_.empty()) {
             say(session->title() + " exited " + std::to_string(session->exitCode()) +
                     " — Leader C for a shell, Leader Q to leave",
                 true);
         }
     }
+
+    tickMs_ = static_cast<int>(tickInterval().count());
+
+    // The splash, and the spinner and elapsed seconds of a running command, are
+    // the only things that move on their own. Everything else waits for news.
+    const term::Session* session = active();
+    const bool animating = boot_.running() || (session && session->commandRunning());
+    return std::exchange(dirty_, false) || animating;
 }
 
 bool App::onMouse(const Event& event) {
@@ -929,7 +1001,7 @@ bool App::onMouse(const Event& event) {
         layout.browserWidth > 0 && !layout.stacked && mouse.x >= browserLeft &&
         mouse.x < browserRight;
 
-    // Straddles both pane borders and the gap, so it is grabbable with gaps = 0.
+    // Covers both borders and the gap so it's still grabbable at gaps = 0.
     const int divider = dividerColumn(layout);
     const bool onDivider =
         divider >= 0 && mouse.x >= divider && mouse.x <= divider + decoration.gaps + 1;
@@ -1006,14 +1078,14 @@ bool App::onMouse(const Event& event) {
     if (inBrowserColumns) {
         focus_ = Focus::Browser;
         if (mouse.motion == Mouse::Pressed) {
-            // Terminals do not report double clicks, so time them here.
+            // Terminals don't report double clicks. Time them ourselves.
             const int row = mouse.y - topOffset;
             const int column = mouse.x - browserLeft - frame;
             const auto now = std::chrono::steady_clock::now();
             const bool doubleClick = row == lastClickRow_ &&
                                      now - lastClick_ < std::chrono::milliseconds(400);
             browser_.onClick(row, column, doubleClick, config_.browser());
-            // Reset after acting, or a third click would count as another pair.
+            // Reset after acting or a third click counts as another pair.
             lastClick_ = doubleClick ? std::chrono::steady_clock::time_point{} : now;
             lastClickRow_ = doubleClick ? -1 : row;
         }
@@ -1030,7 +1102,7 @@ bool App::onMouse(const Event& event) {
     const int row = mouse.y - topOffset;
     if (column < 0 || row < 0 || row >= layout.terminalRows) return true;
 
-    // A program that asked for mouse reporting gets the event; otherwise it is a selection.
+    // Program asked for mouse reporting? It gets the event. Otherwise it's a selection.
     if (session->screen().mouseTracking != 0 && !session->scrolled()) {
         const int button = mouse.motion == Mouse::Released ? 3 : 0;
         session->sendMouse(button, column, row, mouse.motion != Mouse::Released,
@@ -1060,11 +1132,8 @@ bool App::onMouse(const Event& event) {
 }
 
 bool App::onEvent(const Event& event) {
-    if (event == kTick) { tick(); return true; }
-    if (event == kOutput) {
-        for (auto& session : tabs_) session->pump();
-        return true;
-    }
+    // The frame was already invalidated by the event arriving. Nothing to do.
+    if (event == kRepaint) return true;
     if (event == kControl) {
         for (const auto& message : control_.take()) handleControl(message);
         return true;
@@ -1075,8 +1144,8 @@ bool App::onEvent(const Event& event) {
             if (!listing->ok && listing->connection == browser_.connection()) {
                 say(listing->error, true);
             }
-            // The shell moved: follow it, the same as OSC 7 does locally.
-            // Only a change counts, so browsing elsewhere is not undone.
+            // Shell moved, so follow it. Same as OSC 7 does locally.
+            // Only a change counts, or browsing elsewhere gets undone.
             if (config_.general().followCwd && !listing->shellCwd.empty() &&
                 listing->shellCwd != followedCwd_) {
                 const bool alreadyThere = listing->shellCwd == listing->path;
@@ -1086,11 +1155,20 @@ bool App::onEvent(const Event& event) {
         }
         return true;
     }
-    // Whatever is on top gets the mouse, or a click would land on the panes
-    // hidden behind it.
+    // Whatever's on top gets the mouse. Otherwise clicks land on the panes
+    // hiding behind it.
     if (event.is_mouse()) {
         const Mouse& mouse = const_cast<Event&>(event).mouse();
         const bool click = mouse.button == Mouse::Left && mouse.motion == Mouse::Pressed;
+        if (confirm_) {
+            if (click) {
+                const int hit = confirmSpots_.at(mouse.x, mouse.y);
+                auto yes = confirm_->onYes;
+                if (hit == kConfirmYes) { confirm_.reset(); if (yes) yes(); }
+                else if (hit == kConfirmNo) { confirm_.reset(); }
+            }
+            return true;
+        }
         if (boot_.running()) {
             if (click) boot_.dismiss();
             return true;
@@ -1107,6 +1185,18 @@ bool App::onEvent(const Event& event) {
 
     const std::string raw = event.input();
     const KeyChord chord = decodeKey(raw);
+
+    if (confirm_) {
+        if (chord.key == "enter" || chord.key == "y") {
+            auto yes = confirm_->onYes;
+            confirm_.reset();
+            if (yes) yes();
+        } else if (chord.key == "escape" || chord.key == "n" ||
+                   (chord.mods == ModCtrl && chord.key == "c")) {
+            confirm_.reset();
+        }
+        return true; // nothing leaks past a question
+    }
 
     if (boot_.running()) {
         boot_.dismiss();
@@ -1173,7 +1263,7 @@ bool App::onEvent(const Event& event) {
         }
         if (chord.key == "tab") { focus_ = Focus::Terminal; return true; }
         if (browser_.onKey(chord, config_.browser())) return true;
-        // Anything the browser does not want goes to the terminal, so typing never disappears.
+        // Anything the browser doesn't want goes to the terminal. Typing never vanishes.
         focus_ = Focus::Terminal;
     }
 
@@ -1199,8 +1289,8 @@ std::string tabLabel(const term::Session& session, std::size_t index) {
 
 } // namespace
 
-// The location, written the way it should be read: a bare path locally, and
-// user@host:path once the pane is showing the other end of a connection.
+// How the current location should read. Bare path locally, user@host:path
+// once the pane is showing a remote.
 std::string App::whereLabel() const {
     if (const Connection* conn = config_.connection(browser_.connection())) {
         return conn->label() + ":" + browser_.where();
@@ -1255,9 +1345,8 @@ Element App::renderStatusBar(const Layout& layout) {
                             (problems == 1 ? " config problem" : " config problems");
     const bool showBrowserStats = width >= 96 && status_.empty() && config_.issues().empty();
 
-    // The bar is one row: whatever the message needs, the key hints give up,
-    // so a long one — an ssh failure, say — cannot squeeze out the spaces
-    // between everything else.
+    // One row to work with. The key hints give up whatever the message needs,
+    // or a long one (an ssh failure, say) squeezes out all the spaces.
     const std::string note = !status_.empty()          ? status_
                              : !problemNote.empty()    ? problemNote
                              : showBrowserStats        ? browser_.statusLine()
@@ -1333,8 +1422,7 @@ Element App::renderHints(int room) {
         {keyHintFor("quit"), "quit"},
     };
 
-    // The way out of a connection is worth saying while you are in one, and
-    // is only in the way the rest of the time.
+    // Worth showing while you're connected. Just clutter the rest of the time.
     if (const term::Session* session = active(); session && !session->connection().empty()) {
         all.insert(all.begin() + 1, {keyHintFor("disconnect"), "disconnect"});
     }
@@ -1372,10 +1460,31 @@ Element App::renderSearch() {
     return hbox(std::move(parts)) | bgcolor(toFtx(theme_->surface));
 }
 
+Element App::renderConfirm(int width, int height) {
+    confirmSpots_.clear();
+    const int panelWidth = std::clamp(width - 8, 36, 64);
+
+    Element body = vbox({
+        text(""),
+        text(" " + elide(confirm_->question, panelWidth - 3)) | color(toFtx(theme_->fg)) | bold,
+        text(" " + elide(confirm_->detail, panelWidth - 3)) | color(toFtx(theme_->muted)),
+        text(""),
+        hbox({
+            text(" "),
+            confirmSpots_.track(kConfirmYes, hint("Enter", "quit anyway", *theme_)),
+            text("   "),
+            confirmSpots_.track(kConfirmNo, hint("Esc", "stay", *theme_)),
+            filler(),
+        }),
+    });
+
+    return modal(std::move(body), *theme_, config_.decoration(), panelWidth, height - 4);
+}
+
 Element App::renderHelp(int width, int height) {
     const int panelWidth = std::clamp(width - 6, 56, 100);
     const int inner = panelWidth - 2;
-    // Two columns when there is room for both, one when there is not.
+    // Two columns if there's room, one if there isn't.
     const int columns = inner >= 84 ? 2 : 1;
     const int columnWidth = inner / columns;
     const int chordWidth = 15;
@@ -1537,10 +1646,12 @@ Element App::render() {
     }
 
     const bool hasOverlay = onboard_.isOpen() || configView_.isOpen() || palette_.isOpen() ||
-                            helpOpen_;
+                            helpOpen_ || confirm_.has_value();
     if (hasOverlay && decoration.dimInactive) root = dim(std::move(root));
 
-    if (onboard_.isOpen()) {
+    if (confirm_) {
+        root = dbox({std::move(root), renderConfirm(layout.width, layout.height)});
+    } else if (onboard_.isOpen()) {
         root = dbox({std::move(root),
                      onboard_.render(*theme_, decoration, layout.width, layout.height)});
     } else if (configView_.isOpen()) {
@@ -1578,7 +1689,7 @@ int App::run() {
     }
     std::string controlError;
     if (!control_.start([this] { screen_.PostEvent(kControl); }, &controlError)) {
-        // Not fatal: without it, `apollo` inside Apollo simply says so.
+        // Not fatal. Without it `apollo` inside Apollo just says so.
         controlError = "control socket: " + controlError;
     }
 
@@ -1600,7 +1711,7 @@ int App::run() {
         boot_.start(std::move(lines), config_.decoration().animate);
     }
 
-    // Ctrl-C and Ctrl-Z belong to the terminal; FTXUI would otherwise raise them itself.
+    // Ctrl-C and Ctrl-Z belong to the terminal. FTXUI would grab them otherwise.
     screen_.ForceHandleCtrlC(false);
     screen_.ForceHandleCtrlZ(false);
     screen_.TrackMouse(true);
@@ -1608,8 +1719,16 @@ int App::run() {
     ticking_ = true;
     ticker_ = std::thread([this] {
         while (ticking_) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            if (ticking_) screen_.PostEvent(kTick);
+            std::this_thread::sleep_for(std::chrono::milliseconds(tickMs_.load()));
+            if (!ticking_) break;
+            // A closure, not an event. FTXUI redraws the whole screen for every
+            // event it handles, so beating with one would repaint several times
+            // a second forever, whether or not anything had changed. This runs
+            // the housekeeping on the UI thread and asks for a frame only when
+            // there is something new to show.
+            screen_.Post([this] {
+                if (tick()) screen_.PostEvent(kRepaint);
+            });
         }
     });
 

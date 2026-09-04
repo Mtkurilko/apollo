@@ -28,7 +28,7 @@ const std::map<std::string, std::string>& keyAliases() {
         {"prior", "pageup"},   {"next", "pagedown"},   {"spc", "space"},
         {"ins", "insert"},     {"arrowleft", "left"},  {"arrowright", "right"},
         {"arrowup", "up"},     {"arrowdown", "down"},  {"tab", "tab"},
-        // Bind lines are comma-separated, so `bind = LEADER, ,, x` could never work.
+        // Bind lines are comma-separated, so `bind = LEADER, ,, x` can't work.
         {"comma", ","},        {"period", "."},        {"dot", "."},
         {"slash", "/"},        {"backslash", "\\"},    {"minus", "-"},
         {"dash", "-"},         {"equal", "="},         {"plus", "+"},
@@ -174,7 +174,7 @@ const ActionInfo* findAction(const std::string& name) {
 
 namespace {
 
-// xterm reports modifiers as a parameter of 1 + a bitmask.
+// xterm reports modifiers as 1 + a bitmask.
 std::uint8_t modsFromParam(int param) {
     const int bits = param - 1;
     std::uint8_t mods = ModNone;

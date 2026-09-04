@@ -1,4 +1,4 @@
-// The command palette: everything Apollo can do, fuzzy filtered.
+// Command palette. Everything Apollo can do, fuzzy filtered.
 #pragma once
 
 #include <functional>
@@ -52,7 +52,7 @@ private:
     int selected_ = 0;
     int scroll_ = 0;
 
-    // Filled while rendering: which row, or which footer button, is where.
+    // Filled while rendering. Which row or footer button is where.
     Hotspots spots_;
 };
 

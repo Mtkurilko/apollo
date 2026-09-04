@@ -96,7 +96,7 @@ bool Palette::onKey(const KeyChord& chord, const std::string& raw) {
         if (query_.text != before) { selected_ = 0; refilter(); }
         return true;
     }
-    // An open palette must not leak keystrokes into the terminal underneath.
+    // An open palette can't leak keystrokes into the terminal underneath.
     return true;
 }
 
@@ -125,7 +125,7 @@ bool Palette::onMouse(const Mouse& mouse) {
         if (action) action();
         return true;
     }
-    // Anywhere else, including outside the modal, dismisses it.
+    // Anywhere else, including outside the modal, closes it.
     if (hit < 0) close();
     return true;
 }

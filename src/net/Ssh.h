@@ -1,5 +1,5 @@
-// SSH destinations. `apollo connect` spawns a real ssh in the pty rather
-// than parsing its output.
+// SSH destinations. `apollo connect` runs a real ssh in the pty instead of
+// parsing its output, so vim/htop/colors all just work.
 #pragma once
 
 #include <string>
@@ -26,7 +26,7 @@ struct Connection {
 
 namespace ssh {
 
-// A command to run, and the environment it needs.
+// A command plus the environment it needs.
 struct Invocation {
     std::vector<std::string> argv;
     std::vector<std::string> env;
@@ -40,17 +40,11 @@ Invocation command(const Connection& conn, const std::string& remote);
 
 void closeMaster(const Connection& conn);
 
-struct Probe {
-    bool ok = false;
-    std::string message;
-};
-Probe probe(const Connection& conn, int timeoutSeconds = 8);
-
-// Escapes one argument for a remote /bin/sh, which only ever sees a string.
+// Escapes one argument for the remote /bin/sh, which only sees a string.
 std::string quoteRemote(const std::string& text);
 
-// The same, for a path: a leading ~ or ~user is left alone so the remote shell
-// still expands it. Quoting it would make `cd` look for a directory called "~".
+// Same but for a path. Leaves a leading ~ or ~user alone so the remote shell
+// still expands it. Quote it and `cd` goes looking for a directory named "~".
 std::string quoteRemotePath(const std::string& path);
 
 } // namespace ssh

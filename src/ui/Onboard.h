@@ -1,4 +1,4 @@
-// First run.
+// First run wizard.
 #pragma once
 
 #include <functional>
@@ -44,7 +44,7 @@ private:
     int themeIndex_ = 0;
     std::string previewTheme_;
 
-    // 0 is the yes/no chip; the rest are the fields below it.
+    // 0 is the yes/no chip, 1-5 are the fields under it.
     static constexpr int kConnectionFields = 6;
     int connectionField_ = 0;
     LineEdit connectionName_;

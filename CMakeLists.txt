@@ -15,10 +15,10 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 # ---------------------------------------------------------------------------
-# FTXUI, pinned and built statically into the binary.
+# FTXUI, pinned and built statically into the binary. (Thomas ik you disapprove)
 #
-# Vendoring it this way means `apollo` has no runtime dependency to install and
-# no package version to drift: the only thing a machine needs is a compiler.
+# But... vendoring it this way means `apollo` has no runtime dependency to install
+# and no package version to drift: the only thing a machine needs is a compiler.
 # ---------------------------------------------------------------------------
 include(FetchContent)
 

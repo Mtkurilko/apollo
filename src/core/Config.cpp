@@ -50,18 +50,6 @@ Config::Setting choice(std::string path, std::string def, std::vector<std::strin
 
 } // namespace
 
-std::string Config::Setting::typeName() const {
-    switch (type) {
-        case Type::String: return "text";
-        case Type::Bool:   return "yes/no";
-        case Type::Int:    return "number";
-        case Type::Enum:   return "choice";
-        case Type::Color:  return "colour";
-        case Type::Path:   return "path";
-    }
-    return "";
-}
-
 const std::vector<Config::Setting>& Config::schema() {
     static const std::vector<Setting> settings = [] {
         std::vector<Setting> s;
@@ -76,7 +64,7 @@ const std::vector<Config::Setting>& Config::schema() {
                          "Disconnecting closes the tab, instead of leaving a local shell in it"));
 
         Setting theme = choice("decoration.theme", "apollo", Theme::builtinNames(),
-                               "Colour scheme, built in or a file in ~/.apollo/themes");
+                               "Color scheme, built in or a file in ~/.apollo/themes");
         theme.openChoices = true;
         s.push_back(std::move(theme));
         s.push_back(choice("decoration.border", "rounded",
@@ -117,7 +105,7 @@ const std::vector<Config::Setting>& Config::schema() {
         s.push_back(flag("browser.details", true, "Describe the selected entry underneath"));
 
         for (const auto& key : Theme::colorKeys()) {
-            s.push_back(str("colors." + key, "", "Override the theme's " + key + " colour",
+            s.push_back(str("colors." + key, "", "Override the theme's " + key + " color",
                             Type::Color));
         }
         return s;
@@ -171,7 +159,7 @@ std::string Config::validate(const Setting& s, const std::string& value) {
         }
         case Type::Color:
             if (value.empty()) return "";
-            return Rgb::parse(value) ? "" : "expected #rrggbb, rgb(r,g,b) or a colour name";
+            return Rgb::parse(value) ? "" : "expected #rrggbb, rgb(r,g,b) or a color name";
         case Type::Path:
         case Type::String:
             return "";
@@ -264,7 +252,7 @@ decoration {
     dim_inactive  = true
 }
 
-# Override individual colours from whichever theme is selected.
+# Override individual colors from whichever theme is selected.
 colors {
     accent = $accent
 }
@@ -537,7 +525,7 @@ void Config::derive() {
         }
         OpenRule rule;
         rule.match = Config::openMatch(parts[0]);
-        // A command may contain commas of its own, so put the rest back together.
+        // A command can have commas of its own, so glue the rest back together.
         rule.how = parts[1];
         for (std::size_t i = 2; i < parts.size(); ++i) rule.how += ", " + parts[i];
         rule.line = entry->line;
@@ -593,7 +581,7 @@ std::optional<Theme> Config::loadThemeFile(const std::string& name) {
     if (const ConfigNode* colors = source.section("colors")) {
         for (const auto& entry : colors->entries) {
             if (!theme.setColor(entry.key, entry.value)) {
-                note(paths::contractUser(file) + ": '" + entry.key + "' is not a colour Apollo sets");
+                note(paths::contractUser(file) + ": '" + entry.key + "' is not a color Apollo sets");
             }
         }
     }
@@ -640,10 +628,10 @@ void Config::deriveTheme() {
     if (const ConfigNode* colors = file_.section("colors")) {
         for (const auto& entry : colors->entries) {
             if (!theme_.setColor(entry.key, entry.value)) {
-                note("colors." + entry.key + ": not a colour Apollo knows (" + entry.value + ")");
+                note("colors." + entry.key + ": not a color Apollo knows (" + entry.value + ")");
             }
         }
-        // Colours changed, so rebuild the ansi ramp derived from them.
+        // Colors changed, so rebuild the ansi ramp that comes off them.
         theme_.rebuildRamp();
     }
 }
@@ -771,7 +759,7 @@ bool Config::addConnection(const Connection& conn, std::string* error) {
         if (error) *error = "A connection needs a name.";
         return false;
     }
-    // The name becomes part of a config path, so it must not contain a dot or whitespace.
+    // The name ends up in a config path, so no dots or whitespace.
     for (const char c : conn.name) {
         if (!std::isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_') {
             if (error) *error = "Connection names use letters, digits, - and _ only.";
@@ -848,7 +836,7 @@ bool Config::removeBind(const std::string& spec) {
     const auto chord = KeyChord::parse(parts[0], parts[1]);
     if (!chord) return false;
 
-    // Drop the user's own line if there is one, else record an `unbind`.
+    // Drop your own line if there is one, otherwise write an `unbind`.
     bool removed = false;
     for (const auto* entry : file_.root().entriesNamed("bind")) {
         const auto existing = ConfigFile::split(entry->value);
@@ -887,8 +875,8 @@ bool Config::addCommand(const std::string& name, const std::string& exec,
 std::string Config::openKeyFor(const std::string& filename) {
     if (filename == "*") return "*";
 
-    // A dotfile with no other dot is a name, not an extension: ".zshrc" has
-    // no type to remember it under.
+    // A dotfile with no other dot is a name, not an extension.
+    // ".zshrc" has no type to remember it under.
     const std::size_t dot = filename.find_last_of('.');
     if (dot == std::string::npos || dot == 0 || dot + 1 == filename.size()) return "";
 
@@ -920,7 +908,7 @@ const OpenRule* Config::openRuleFor(const std::string& filename) const {
 bool Config::setOpenRule(const std::string& match, const std::string& how) {
     if (match.empty() || how.empty()) return false;
 
-    // One rule per thing matched: replace rather than pile up.
+    // One rule per thing matched. Replace instead of piling up.
     const std::string key = openMatch(match);
     file_.removeMatching("open", key + ",");
     file_.append("open", key + ", " + how);
@@ -970,7 +958,7 @@ std::optional<std::string> migrateLegacyConfig(const fs::path& properties) {
     }
     out << "}\n";
 
-    // 0.2 used connection.<name>.<field>; 0.1 a flat ssh.<field> block.
+    // 0.2 used connection.<name>.<field>. 0.1 was a flat ssh.<field> block.
     std::map<std::string, std::map<std::string, std::string>> hosts;
     for (const auto& [key, value] : values) {
         if (key.rfind("connection.", 0) == 0) {

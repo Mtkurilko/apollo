@@ -22,7 +22,7 @@ enum Mod : std::uint8_t {
 
 struct KeyChord {
     std::uint8_t mods = ModNone;
-    std::string key; // normalised: "a", "f1", "left", "enter", "space", ...
+    std::string key; // normalized: "a", "f1", "left", "enter", "space", ...
 
     static std::optional<KeyChord> parse(const std::string& modifiers,
                                          const std::string& key);

@@ -107,7 +107,7 @@ bind = LEADER, B, toggle_browser
     expect(file.getAll("bind").size(), std::size_t(2), "collects repeated keys");
     check(!file.get("general.nothing").has_value(), "missing keys report missing");
 
-    // A hash inside a value is a colour, not a comment; a hash after a space is
+    // A hash inside a value is a color, not a comment; a hash after a space is
     // a comment. Both have to survive a rewrite.
     file.set("general.workspace", "~/elsewhere");
     check(file.text().find("# where it opens") != std::string::npos,
@@ -203,15 +203,15 @@ bind = LEADER, B, toggle_browser
     expect(ConfigFile::asInt("42", 0), 42, "reads a number");
 }
 
-// --- colours ---------------------------------------------------------------
+// --- colors ---------------------------------------------------------------
 
 void testTheme() {
-    section("colours");
+    section("colors");
 
     check(Rgb::parse("#7aa2f7") == Rgb{122, 162, 247}, "parses six digit hex");
     check(Rgb::parse("#abc") == Rgb{170, 187, 204}, "parses three digit hex");
     check(Rgb::parse("rgb(1, 2, 3)") == Rgb{1, 2, 3}, "parses rgb()");
-    check(Rgb::parse("teal").has_value(), "parses a colour name");
+    check(Rgb::parse("teal").has_value(), "parses a color name");
     check(!Rgb::parse("#xyz").has_value(), "rejects nonsense");
     expect(Rgb{122, 162, 247}.hex(), std::string("#7aa2f7"), "round trips to hex");
 
@@ -238,7 +238,7 @@ void testKeys() {
 
     check(KeyChord::parse("CTRL SHIFT", "F5").has_value(), "parses two modifiers and a function key");
     check(KeyChord::parse("", "COMMA").has_value(), "punctuation can be spelled out");
-    expect(KeyChord::parse("", "COMMA")->key, std::string(","), "comma normalises to the character");
+    expect(KeyChord::parse("", "COMMA")->key, std::string(","), "comma normalizes to the character");
     check(!KeyChord::parse("HYPER", "K").has_value(), "an unknown modifier is rejected");
     check(!KeyChord::parse("CTRL", "wobble").has_value(), "an unknown key is rejected");
 
@@ -335,25 +335,25 @@ void testScreen() {
     expect(scrolling.totalLines(), 3, "history and screen address as one run");
 
     // Erase should keep the current background, which is how programs paint
-    // coloured panels.
+    // colored panels.
     Screen erasing(3, 10, 10);
     VtParser eraseParser(erasing);
     write(eraseParser, "\x1B[41m\x1B[2J");
-    check(erasing.row(0).at(0).attr.bg == indexedColor(1), "erasing keeps the background colour");
+    check(erasing.row(0).at(0).attr.bg == indexedColor(1), "erasing keeps the background color");
 
     // SGR.
     Screen styled(3, 20, 10);
     VtParser styleParser(styled);
     write(styleParser, "\x1B[1;31mred\x1B[0m plain");
     check(styled.row(0).at(0).attr.flags & FlagBold, "bold is applied");
-    check(styled.row(0).at(0).attr.fg == indexedColor(1), "colour is applied");
+    check(styled.row(0).at(0).attr.fg == indexedColor(1), "color is applied");
     check(styled.row(0).at(4).attr.plain(), "reset clears attributes");
 
     write(styleParser, "\x1B[38;2;10;20;30mtrue");
-    check(styled.attrs().fg == rgbColor(10, 20, 30), "24 bit colour is applied");
+    check(styled.attrs().fg == rgbColor(10, 20, 30), "24 bit color is applied");
 
     write(styleParser, "\x1B[38;5;200m");
-    check(isRgbColor(styled.attrs().fg), "an indexed colour past 15 becomes rgb");
+    check(isRgbColor(styled.attrs().fg), "an indexed color past 15 becomes rgb");
 
     // Cursor addressing, with an omitted parameter.
     Screen addressed(5, 20, 10);
@@ -660,7 +660,7 @@ void testThemeFiles() {
     Config config;
     config.loadText("decoration {\n    theme = sunset\n}\n");
     expect(config.theme().name, std::string("sunset"), "a theme file is found by name");
-    check(config.theme().accent == Rgb{255, 138, 91}, "its colours are applied");
+    check(config.theme().accent == Rgb{255, 138, 91}, "its colors are applied");
     check(config.theme().fg == Theme::builtin("midnight")->fg, "the base theme shows through");
     check(config.issues().empty(), "and it loads without complaint");
 
@@ -1013,7 +1013,7 @@ void testOpenRules() {
 
     check(config.openRules().size() == 3, "every rule is read");
     check(config.openRules()[1].match == "png",
-          "a leading dot and any capitals are normalised away");
+          "a leading dot and any capitals are normalized away");
 
     const auto* markdown = config.openRuleFor("notes.md");
     check(markdown && markdown->how == "vim", "a file matches on its extension");

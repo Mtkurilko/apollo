@@ -1,5 +1,5 @@
-// Pane geometry. The terminal's size has to be exactly the space it is drawn
-// in, or the renderer clips the last column of every row.
+// Pane geometry. The terminal size has to be exactly the space it's drawn in
+// or the renderer clips the last column of every row.
 #pragma once
 
 #include <string>
@@ -37,7 +37,7 @@ struct Panes {
 
 constexpr int kUsableCols = 24;
 constexpr int kUsableRows = 6;
-// Narrower than this is all truncation, so the browser gives up its place instead.
+// Any narrower and it's all truncation, so the browser gives up its space.
 constexpr int kUsableBrowserCols = 22;
 
 Panes compute(const Request& request);

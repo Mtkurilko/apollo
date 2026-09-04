@@ -1,6 +1,6 @@
-// Talking to a running Apollo. Each instance listens on a socket and tells
-// the shells it starts where it is, so `apollo` inside Apollo acts on the
-// window around it instead of starting another one.
+// Talking to an Apollo that's already running. Each instance listens on a
+// socket and tells the shells it starts where to find it. That's what makes
+// `apollo` inside Apollo act on the window you're in instead of nesting.
 #pragma once
 
 #include <atomic>

@@ -10,10 +10,9 @@
 namespace apollo::remote {
 namespace {
 
-// One command, so a listing costs one round trip over the shared master.
-// The first line is the directory it settled on, the second says which of the
-// two `ls` dialects answered, and the rest is that listing followed by a
-// second, terser one used only to see through symlinks to directories.
+// All one command, so a listing is one round trip.
+// Line 1 is the directory, line 2 says which `ls` dialect answered, then the
+// listing, then a short second listing just to see through symlinks to dirs.
 std::string script(const std::string& path, int shellPid) {
     const std::string quoted = ssh::quoteRemotePath(path.empty() ? "." : path);
     std::string out =
@@ -23,8 +22,8 @@ std::string script(const std::string& path, int shellPid) {
         "LC_ALL=C ls -lA . 2>/dev/null; fi; echo APOLLO_DIRS; "
         "LC_ALL=C ls -ALp . 2>/dev/null";
 
-    // Where the connected shell has got to. /proc on Linux, lsof elsewhere;
-    // a machine with neither simply does not answer, and nothing follows.
+    // Where the shell has got to. /proc on Linux, lsof on BSD/mac.
+    // A machine with neither just doesn't answer and nothing follows.
     if (shellPid > 0) {
         const std::string pid = std::to_string(shellPid);
         out += "; echo APOLLO_SHELL; readlink /proc/" + pid + "/cwd 2>/dev/null || "
@@ -33,7 +32,7 @@ std::string script(const std::string& path, int shellPid) {
     return out;
 }
 
-// Offset of the nth whitespace-separated field, or npos.
+// Offset of the nth whitespace-separated field. npos if there isn't one.
 std::size_t fieldAt(const std::string& line, int n) {
     std::size_t at = 0;
     for (int i = 0; i < n; ++i) {
@@ -52,8 +51,8 @@ std::vector<std::string> fields(const std::string& line, int count) {
     return out;
 }
 
-// "-rw-r--r--", "drwxr-xr-x+", "lrwxrwxrwx". The trailing ACL marker some
-// systems add is not part of the mode.
+// "-rw-r--r--", "drwxr-xr-x+", "lrwxrwxrwx".
+// Some systems tack a + on the end for ACLs. Not part of the mode.
 bool looksLikeMode(const std::string& text) {
     if (text.size() < 10) return false;
     const char type = text[0];
@@ -102,17 +101,16 @@ Listing parse(const std::string& output) {
     out.path = lines[0];
 
     const bool epoch = lines.size() > 1 && lines[1] == "EPOCH";
-    // A date the remote wrote as text takes three fields where an epoch takes one.
+    // A text date is 3 fields, an epoch is 1. Changes where the name starts.
     const int nameField = epoch ? 6 : 8;
 
-    // The long listing runs to the marker; the short one, which resolves
-    // symlinks, runs from there to the end.
+    // Long listing runs up to the marker, the symlink one from there to the end.
     std::size_t marker = lines.size();
     for (std::size_t i = 2; i < lines.size(); ++i) {
         if (lines[i] == "APOLLO_DIRS") { marker = i; break; }
     }
 
-    // The shell's own directory, when it was asked for, closes the output.
+    // If we asked for the shell's directory it's the last thing printed.
     std::size_t shellMarker = lines.size();
     for (std::size_t i = marker + 1; i < lines.size(); ++i) {
         if (lines[i] == "APOLLO_SHELL") { shellMarker = i; break; }
@@ -199,7 +197,7 @@ Listing list(const Connection& conn, const std::string& path, int shellPid) {
     Listing parsed = parse(result.out);
     parsed.connection = conn.name;
     if (!parsed.ok) {
-        // The generic parse errors read better with the machine named.
+        // Name the machine -- "no such directory" alone isn't much help.
         parsed.error += parsed.error == "no such directory" ? " on " + conn.label() + ": " + path
                                                             : " from " + conn.label();
         parsed.path = path;
@@ -218,11 +216,6 @@ Lister::~Lister() {
     state_->stopping = true;
     state_->wake = nullptr; // whatever it pointed at is going away
     state_->ready.notify_all();
-}
-
-bool Lister::busy() const {
-    std::lock_guard<std::mutex> lock(state_->mutex);
-    return state_->busy;
 }
 
 void Lister::request(const Connection& conn, const std::string& path, int shellPid) {
@@ -253,8 +246,7 @@ void Lister::request(const Connection& conn, const std::string& path, int shellP
                     std::lock_guard<std::mutex> lock(state->mutex);
                     state->busy = false;
                     if (state->stopping) return;
-                    // A newer request is already waiting, so this answer is
-                    // for a directory nobody is looking at any more.
+                    // Newer request already waiting. Nobody wants this answer.
                     if (state->queued) continue;
                     state->done = std::move(answer);
                     wake = state->wake;

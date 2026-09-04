@@ -3,9 +3,9 @@ build/
 _deps/
 compile_commands.json
 
-# Pre-0.3 settings file. It held a live SSH password; it is read once to
-# migrate and never committed.
+# Keeping though it's a Pre-0.3 
+# settings file. Sensitive
 apollo.properties
 
-# macOS
+# macOS junk
 .DS_Store

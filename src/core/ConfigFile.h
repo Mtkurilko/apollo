@@ -1,4 +1,6 @@
 // Parser and writer for apollo.conf.
+// Format/reload behavior inspired by hyprland -- customization and portability
+// without a GUI to click through.
 //
 //     general {
 //         workspace = ~/Apollo
@@ -6,8 +8,8 @@
 //     connection lab { host = 10.0.0.5 }
 //     bind = CTRL, K, command_palette
 //
-// Rewriting a value keeps the file's comments and layout. `#` starts a
-// comment at the start of a line or between spaces, so #7aa2f7 is a colour.
+// Rewriting a value keeps your comments and layout. `#` only starts a comment
+// at the start of a line or after a space, so #7aa2f7 stays a color.
 #pragma once
 
 #include <filesystem>
@@ -33,7 +35,7 @@ struct ConfigEntry {
     int line = -1;        // 0-based index into the owning file's lines
 };
 
-// A `name { ... }` block, or `name label { ... }`. The root node has no name.
+// A `name { ... }` block, or `name label { ... }`. Root has no name.
 struct ConfigNode {
     std::string name;
     std::string label;
@@ -53,11 +55,11 @@ public:
     bool parse(const std::string& text, const std::string& originName = "<memory>");
     bool load(const std::filesystem::path& path);
 
-    // Writes the current text atomically, with owner-only permissions.
+    // Atomic write, owner-only permissions.
     bool save(const std::filesystem::path& path, std::string* error = nullptr) const;
 
     // --- reading ---------------------------------------------------------- Paths are
-    // dotted: "general.workspace", "connection.lab.host".
+    // Dotted. "general.workspace", "connection.lab.host".
     std::optional<std::string> get(const std::string& path) const;
     std::string get(const std::string& path, const std::string& fallback) const;
     std::vector<std::string> getAll(const std::string& path) const;
@@ -82,7 +84,6 @@ public:
     // --- value helpers ----------------------------------------------------
     static bool asBool(const std::string& value, bool fallback);
     static int asInt(const std::string& value, int fallback);
-    static float asFloat(const std::string& value, float fallback);
     static std::vector<std::string> split(const std::string& value, char sep = ',');
     static std::string trim(const std::string& text);
 
@@ -102,7 +103,7 @@ private:
     std::map<std::string, std::string> vars_;
     std::vector<ConfigDiagnostic> diags_;
     std::string origin_ = "<memory>";
-    // Files pulled in by `source =`; they are read but never rewritten.
+    // Files pulled in by `source =`. Read only, never rewritten.
     std::vector<std::filesystem::path> sourced_;
 };
 

@@ -1,4 +1,4 @@
-// Shared interface pieces, and Apollo colours converted to FTXUI's.
+// Shared UI pieces, plus Apollo colors converted to FTXUI's.
 #pragma once
 
 #include <deque>
@@ -15,9 +15,9 @@
 
 namespace apollo::ui {
 
-ftxui::Color toFtx(const Rgb& colour);
+ftxui::Color toFtx(const Rgb& color);
 
-ftxui::Color resolve(term::ColorRef colour, const Theme& theme, bool foreground);
+ftxui::Color resolve(term::ColorRef color, const Theme& theme, bool foreground);
 
 ftxui::BorderStyle borderStyle(const std::string& name);
 
@@ -30,7 +30,7 @@ ftxui::Element panel(const std::string& title,
 
 ftxui::Element kbd(const std::string& label, const Theme& theme);
 
-// "Ctrl+K  open the palette" rows, for the help and the empty states.
+// "Ctrl+K  open the palette" rows. Used by the help and the empty states.
 ftxui::Element hint(const std::string& keys, const std::string& what, const Theme& theme);
 
 ftxui::Element highlighted(const std::string& text,
@@ -41,17 +41,17 @@ ftxui::Element highlighted(const std::string& text,
 ftxui::Element modal(ftxui::Element content, const Theme& theme,
                      const DecorationSettings& decoration, int width, int height);
 
-// Where the things a mouse can hit ended up. An overlay tracks its rows and
-// buttons while rendering, then asks what is under the pointer when a click
-// arrives, so nothing has to work out the geometry of a centred modal by hand.
+// Keeps track of where clickable things ended up. An overlay tracks its rows
+// and buttons while rendering, then asks what's under the pointer on a click.
+// Beats working out the geometry of a centered modal by hand.
 class Hotspots {
 public:
     void clear() { spots_.clear(); }
 
-    // Wraps an element so rendering records the box it occupied under `id`.
+    // Wraps an element so rendering records the box it landed in under `id`.
     ftxui::Element track(int id, ftxui::Element element);
 
-    // The smallest tracked box containing the point, or -1.
+    // Smallest tracked box containing the point. -1 if nothing is there.
     int at(int x, int y) const;
 
 private:
@@ -59,7 +59,7 @@ private:
         int id = 0;
         ftxui::Box box;
     };
-    // A deque: reflect() keeps a reference, so the boxes must not move.
+    // deque, not vector -- reflect() keeps a reference so these can't move.
     std::deque<Spot> spots_;
 };
 
@@ -77,10 +77,10 @@ struct LineEdit {
                           bool mask = false) const;
 };
 
-// Cuts a string to `width` display columns, adding an ellipsis when it had to.
+// Cuts a string to `width` columns. Adds an ellipsis if it had to cut.
 std::string elide(const std::string& text, int width);
 std::string elidePath(const std::string& path, int width);
-// Display width of a UTF-8 string, in terminal columns.
+// How wide a UTF-8 string actually is, in terminal columns.
 int displayWidth(const std::string& text);
 
 } // namespace apollo::ui

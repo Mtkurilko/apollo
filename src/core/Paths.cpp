@@ -33,7 +33,6 @@ fs::path configDir() {
 fs::path configFile()   { return configDir() / "apollo.conf"; }
 fs::path commandsDir()  { return configDir() / "commands"; }
 fs::path themesDir()    { return configDir() / "themes"; }
-fs::path stateDir()     { return configDir() / "state"; }
 
 fs::path legacyPropertiesFile() { return configDir() / "config.properties"; }
 

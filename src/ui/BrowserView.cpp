@@ -32,7 +32,7 @@ std::string humanSize(std::uintmax_t bytes) {
     return out.str();
 }
 
-// file_time_type has no portable calendar conversion before C++20.
+// file_time_type has no portable calendar conversion until C++20.
 std::time_t toTimeT(fs::file_time_type when) {
     const auto systemTime = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
         when - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
@@ -79,7 +79,7 @@ std::string permissionString(fs::perms mode, bool directory) {
     return out;
 }
 
-// The other direction, for the mode string a remote `ls` reported.
+// Other direction, for the mode string a remote `ls` gave us.
 fs::perms permissionsFrom(const std::string& text) {
     fs::perms mode = fs::perms::none;
     if (text.size() < 9) return mode;
@@ -258,7 +258,7 @@ void BrowserView::showRemote(const remote::Listing& listing, const BrowserSettin
     error_.clear();
     remotePath_ = listing.path;
 
-    // A refresh should not move the cursor off whatever was selected.
+    // A refresh shouldn't move the cursor off whatever was selected.
     const Entry* was = selected();
     const std::string wasNamed = was ? was->name : std::string();
 
@@ -294,8 +294,8 @@ void BrowserView::backToLocal(const fs::path& path, const BrowserSettings& setti
 
 void BrowserView::goTo(const Step& step, const BrowserSettings& settings) {
     if (step.connection.empty()) {
-        // setPath does the clearing, and would refuse the move if the pane
-        // were already marked local at this path.
+        // setPath clears for us, and would refuse the move if the pane were
+        // already marked local at this path.
         setPath(step.path, false);
         refresh(settings);
     } else if (onNeedRemote) {
@@ -405,12 +405,12 @@ void BrowserView::applyFilterAndSort(const BrowserSettings& settings) {
         shown_.push_back(entry);
     }
 
-    // directory_iterator promises no order, so the list would reshuffle on every change.
+    // directory_iterator promises no order. Without this the list reshuffles constantly.
     std::sort(shown_.begin(), shown_.end(), [&](const Entry& a, const Entry& b) {
         if (settings.dirsFirst && a.directory != b.directory) return a.directory;
 
         const auto byName = [&] {
-            // Case-insensitive, so `Makefile` sits next to `main.cpp`.
+            // Case-insensitive so `Makefile` sits next to `main.cpp`.
             return std::lexicographical_compare(
                 a.name.begin(), a.name.end(), b.name.begin(), b.name.end(),
                 [](char x, char y) {
@@ -444,7 +444,7 @@ void BrowserView::loadGitStatus() {
     if (remote()) return; // running git here would report on the wrong machine
     gitStatus_.clear();
 
-    // Find .git first: outside a repo this is one stat per parent, not a failed spawn.
+    // Find .git first. Outside a repo that's one stat per parent, not a failed spawn.
     std::error_code ec;
     fs::path probe = path_;
     gitRoot_.clear();
@@ -469,7 +469,7 @@ void BrowserView::loadGitStatus() {
         const char worktree = line[1];
         std::string name = line.substr(3);
 
-        // Only the first component matters: a change deep inside marks the directory.
+        // Only the first component matters. A change deep inside marks the directory.
         if (const auto slash = name.find('/'); slash != std::string::npos) {
             name = name.substr(0, slash);
         }
@@ -484,7 +484,7 @@ void BrowserView::loadGitStatus() {
     }
 }
 
-void BrowserView::refreshIfStale(const BrowserSettings& settings) {
+bool BrowserView::refreshIfStale(const BrowserSettings& settings) {
     if (remote()) {
         if (settings.showHidden != lastShowHidden_ || settings.sort != lastSort_ ||
             settings.sortReverse != lastReverse_) {
@@ -492,11 +492,12 @@ void BrowserView::refreshIfStale(const BrowserSettings& settings) {
             lastSort_ = settings.sort;
             lastReverse_ = settings.sortReverse;
             applyFilterAndSort(settings);
+            return true;
         }
-        return;
+        return false;
     }
     const auto now = std::chrono::steady_clock::now();
-    if (now - lastCheck_ < std::chrono::milliseconds(400)) return;
+    if (now - lastCheck_ < std::chrono::milliseconds(400)) return false;
     lastCheck_ = now;
 
     if (settings.showHidden != lastShowHidden_ || settings.sort != lastSort_ ||
@@ -505,13 +506,17 @@ void BrowserView::refreshIfStale(const BrowserSettings& settings) {
         lastSort_ = settings.sort;
         lastReverse_ = settings.sortReverse;
         applyFilterAndSort(settings);
-        return;
+        return true;
     }
 
     std::error_code ec;
     const auto stamp = fs::last_write_time(path_, ec);
-    if (ec) return;
-    if (stamp != stamp_ || all_.empty()) refresh(settings);
+    if (ec) return false;
+    if (stamp != stamp_ || all_.empty()) {
+        refresh(settings);
+        return true;
+    }
+    return false;
 }
 
 // --- selection -------------------------------------------------------------
@@ -764,8 +769,8 @@ std::string BrowserView::statusLine() const {
 Element BrowserView::renderToolbar(const Theme& theme, const BrowserSettings& settings,
                                    bool focused, int width) const {
     const auto button = [&](const std::string& glyph, Hit hit, bool enabled) {
-        Color colour = enabled ? toFtx(theme.fg) : toFtx(theme.border);
-        Element cell = text(" " + glyph + " ") | color(colour);
+        const Color ink = enabled ? toFtx(theme.fg) : toFtx(theme.border);
+        Element cell = text(" " + glyph + " ") | color(ink);
         if (enabled && hovered_ == hit) {
             cell = std::move(cell) | bgcolor(toFtx(theme.selection)) | color(toFtx(theme.accent));
         }

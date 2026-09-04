@@ -1,4 +1,4 @@
-// Escape sequence parser: a DEC/ECMA-48 state machine driving a Screen.
+// Escape sequence parser. DEC/ECMA-48 state machine driving a Screen.
 #pragma once
 
 #include <functional>
@@ -19,9 +19,8 @@ public:
 
     std::string takeReplies();
 
-    // OSC 52.
-    std::function<void(const std::string&)> onClipboard;
-    // OSC 133 D — a command finished, with its exit status if it gave one.
+    std::function<void(const std::string&)> onClipboard; // OSC 52
+    // OSC 133 D. A command finished, with its exit status if it gave one.
     std::function<void(int)> onCommandFinished;
 
 private:
@@ -59,7 +58,7 @@ private:
     std::string oscBuffer_;
     std::string replies_;
 
-    // Carried across feed() calls so a split sequence still makes one character.
+    // Carried across feed() calls so a split sequence still lands as one character.
     char32_t utf8_ = 0;
     int utf8Remaining_ = 0;
 

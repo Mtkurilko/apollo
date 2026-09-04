@@ -1,5 +1,5 @@
-// The terminal grid: what is on screen, what has scrolled off, and the modes
-// a program can set. Knows nothing about escape sequences or drawing.
+// The terminal grid. What's on screen, what scrolled off, and the modes a
+// program can set. Knows nothing about escape sequences or drawing.
 #pragma once
 
 #include <cstdint>
@@ -61,7 +61,7 @@ struct Cell {
 struct Row {
     std::vector<Cell> cells;
     bool wrapped = false;
-    // Set by OSC 133, so Apollo can jump between commands.
+    // OSC 133 sets these. Lets Apollo jump between commands.
     bool promptStart = false;
 
     const Cell& at(int x) const;
@@ -84,7 +84,7 @@ public:
     int historyLines() const { return static_cast<int>(history_.size()); }
     int totalLines() const { return historyLines() + rows_; }
     const Row& lineAt(int absolute) const;
-    // Absolute line numbers carrying an OSC 133 prompt mark, oldest first.
+    // Absolute line numbers with an OSC 133 prompt mark, oldest first.
     std::vector<int> promptLines() const;
 
     int cursorX() const { return x_; }
@@ -150,14 +150,14 @@ public:
     // --- things the UI wants to know about --------------------------------
     std::string title;
     std::string cwd;      // OSC 7
-    // The pid of a shell on the far end of a connection, which reports it once
-    // at startup. Nothing local needs this: it is how a remote directory is
-    // found without installing anything over there.
+    // Pid of a shell on the far end of a connection. It reports this once at
+    // startup. Nothing local uses it -- it's how we find a remote directory
+    // without installing anything over there.
     int shellPid = 0;
     bool bellPending = false;
-    // OSC 133 C and D: the shell telling us a command started and finished.
+    // OSC 133 C and D. The shell telling us a command started/finished.
     bool commandRunning = false;
-    // Bumped whenever anything visible changes, so the UI can skip redraws.
+    // Bumped whenever something visible changes. Lets the UI skip redraws.
     std::uint64_t revision() const { return revision_; }
 
 private:
@@ -205,6 +205,5 @@ int charWidth(char32_t cp);
 
 // One code point as UTF-8.
 void appendUtf8(std::string& out, char32_t cp);
-std::string encodeUtf8(char32_t cp);
 
 } // namespace apollo::term

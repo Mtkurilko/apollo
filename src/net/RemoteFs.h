@@ -1,5 +1,5 @@
-// Listing directories on the other end of a connection, over the ssh master
-// `apollo connect` already keeps open.
+// Lists directories on the far side of a connection. Reuses the ssh master
+// `apollo connect` already has open, so it is one round trip, not a login.
 #pragma once
 
 #include <condition_variable>
@@ -35,23 +35,19 @@ struct Listing {
     std::string path;  // absolute, with ~ and symlinks already resolved remotely
     std::string error; // set when ok is false
     std::vector<Entry> entries;
-    // Where the connected shell is, when it could be found. Empty on a remote
-    // that offers neither /proc nor lsof.
-    std::string shellCwd;
+    std::string shellCwd; // where the remote shell is. Empty if we can't tell
 };
 
-// One round trip. Blocks, so callers on the UI thread want the Lister below.
-// `shellPid` is the connected shell, so its directory can come back with the
-// listing rather than costing a second round trip. Zero to skip that.
+// This blocks, so the UI thread should use the Lister below instead.
+// Pass shellPid to get that shell's directory back in the same trip. 0 skips it.
 Listing list(const Connection& conn, const std::string& path, int shellPid = 0);
 
-// What the remote printed, turned into entries. Split out from list() because
-// `ls` output is the part worth testing without a machine to talk to.
+// Turns what the remote printed into entries. Split out from list() so the
+// `ls` parsing can be tested without a machine to talk to.
 Listing parse(const std::string& output);
 
-// Runs listings on a worker thread and wakes the caller when one lands. Only
-// the newest request matters: a stale reply for a directory nobody is looking
-// at any more is thrown away.
+// Runs listings on a worker thread and wakes the caller when one lands.
+// Newest request wins -- a reply for a directory you already left is dropped.
 class Lister {
 public:
     explicit Lister(std::function<void()> wake);
@@ -60,9 +56,8 @@ public:
     Lister& operator=(const Lister&) = delete;
 
     void request(const Connection& conn, const std::string& path, int shellPid = 0);
-    // The listing that arrived since the last call, if there was one.
+    // Whatever arrived since the last call, if anything.
     std::optional<Listing> take();
-    bool busy() const;
 
 private:
     struct Job {
@@ -71,9 +66,8 @@ private:
         int shellPid = 0;
     };
 
-    // The worker outlives the Lister when a listing is still in flight — an
-    // ssh call cannot be interrupted — so what they share is held by both and
-    // freed by whichever finishes last.
+    // You can't interrupt an ssh call, so the worker can outlive the Lister.
+    // Both hold this and whoever finishes last frees it.
     struct Shared {
         std::mutex mutex;
         std::condition_variable ready;

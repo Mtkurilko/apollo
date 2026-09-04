@@ -1,4 +1,4 @@
-// Colours. No rendering library here, so core stays portable.
+// Colors. No rendering library in here, keeps core portable.
 #pragma once
 
 #include <array>
@@ -13,9 +13,8 @@ struct Rgb {
     std::uint8_t r = 0, g = 0, b = 0;
 
     std::string hex() const;
-    // Accepts #rgb, #rrggbb, rgb(r,g,b) and the 16 ANSI colour names.
+    // Takes #rgb, #rrggbb, rgb(r,g,b) or one of the 16 ANSI color names.
     static std::optional<Rgb> parse(const std::string& text);
-    float luma() const;
     Rgb mix(const Rgb& other, float t) const;
 
     bool operator==(const Rgb& o) const { return r == o.r && g == o.g && b == o.b; }
@@ -42,11 +41,11 @@ struct Theme {
     static std::optional<Theme> builtin(const std::string& name);
     static std::vector<std::string> builtinNames();
 
-    // Applies `key = #rrggbb` pairs from a decoration block or a theme file.
+    // Applies `key = #rrggbb` pairs from a decoration block or theme file.
     bool setColor(const std::string& key, const std::string& value);
     static std::vector<std::string> colorKeys();
 
-    // Recomputes the 16 ANSI colours from the theme's own palette.
+    // Rebuilds the 16 ANSI colors off the theme's own palette.
     void rebuildRamp();
 };
 

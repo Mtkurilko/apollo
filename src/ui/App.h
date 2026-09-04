@@ -1,8 +1,10 @@
-// The application: layout, focus, keys, tabs, overlays.
+// The app itself. Layout/focus/keys/tabs/overlays all live here.
 #pragma once
 
 #include <chrono>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -59,10 +61,10 @@ private:
                                                const std::string& initialCommand,
                                                std::string* error);
     bool newTab(const Connection* connection, const std::string& initialCommand = "");
-    // Swaps what a tab is connected to without losing the tab itself.
+    // Changes what a tab is connected to. Keeps the tab.
     bool retarget(int index, const Connection* connection);
     void closeTab(int index);
-    // Drops the shared ssh master once the last tab using it has gone.
+    // Drops the shared ssh master once the last tab using it is gone.
     void releaseConnection(const std::string& name);
     term::Session* active();
     const term::Session* active() const;
@@ -71,21 +73,27 @@ private:
     bool onEvent(const ftxui::Event& event);
     bool onMouse(const ftxui::Event& event);
     void handleControl(const std::string& message);
-    // First column of the grab zone, or -1 when the panes are not side by side.
+    // First column you can grab to drag. -1 if the panes aren't side by side.
     int dividerColumn(const Layout& layout) const;
     bool runBind(const KeyChord& chord);
     void act(const std::string& action, const std::vector<std::string>& args);
     void runCommand(const Command& command);
     void openPalette();
     // --- opening a file ---------------------------------------------------
-    // Follows the `open` rule for its type; `alwaysAsk` puts the choice up
-    // again even when one has been remembered.
+    // Uses the `open` rule for the file type. alwaysAsk re-asks even if we
+    // already remembered an answer.
     void openFile(const std::filesystem::path& path, bool alwaysAsk = false);
     void askHowToOpen(const std::filesystem::path& path);
     void runOpener(const std::string& how, const std::filesystem::path& path);
-    // The list of destinations, when `apollo connect` was not told which.
+    // The destination list, for when `apollo connect` wasn't told which one.
     void pickConnection();
-    void tick();
+    // Housekeeping beat. Returns true when something on screen actually moved,
+    // so the caller can skip the repaint when nothing did.
+    bool tick();
+    // How long until the next beat. Only fast while something is animating.
+    std::chrono::milliseconds tickInterval() const;
+    // Marks the frame as worth redrawing on the next beat.
+    void invalidate() { dirty_ = true; }
 
     // --- rendering --------------------------------------------------------
     ftxui::Element render();
@@ -96,6 +104,17 @@ private:
     ftxui::Element renderHelp(int width, int height);
     ftxui::Element renderSearch();
     ftxui::Element renderHints(int room);
+
+    // A yes/no question on top of everything. Only used for quitting with
+    // something still running, since that's the one thing you can't undo.
+    struct Confirmation {
+        std::string question;
+        std::string detail;
+        std::function<void()> onYes;
+    };
+    void askConfirm(Confirmation question);
+    const term::Session* busyTab() const;
+    ftxui::Element renderConfirm(int width, int height);
 
     void say(const std::string& message, bool isError = false);
     void copyToClipboard(const std::string& text);
@@ -114,27 +133,27 @@ private:
     int tab_ = 0;
     Focus focus_ = Focus::Terminal;
 
-    // --- the browser, which follows whichever machine the active tab is on --
+    // --- browser. Follows whichever machine the active tab is on ----------
     void followActiveMachine();
     void askRemote(const std::string& connection, const std::string& path, bool record = true);
-    // Takes the shell to wherever the pane just went, and stops follow_cwd
-    // from dragging the pane back before the shell has caught up.
+    // Takes the shell wherever the pane just went. Also stops follow_cwd from
+    // yanking the pane back before the shell has caught up.
     void syncShell(const std::string& connection, const std::string& path);
 
     BrowserView browser_;
     remote::Lister remoteLister_;
-    // The remote directory the shell last reported, so a listing that fails is
-    // not asked for again every tick.
+    // Last remote directory the shell reported. Stops a failed listing from
+    // being asked for again every tick.
     std::string followedCwd_;
-    // A connection a tab is still on but the config no longer knows about, so
-    // the pane gives up on it once rather than every tick.
+    // A connection a tab is on but the config no longer has. Give up once,
+    // not every tick.
     std::string abandonedConnection_;
-    // The connection the pane was last pointed at for the active tab, so
-    // browsing somewhere else is not undone on the next tick.
+    // What the pane was last pointed at for this tab. Without it, browsing
+    // somewhere else gets undone on the next tick.
     std::string shownMachine_;
     std::chrono::steady_clock::time_point remoteRefreshed_{};
-    // Set when the connected terminal produces output, so the shell's
-    // directory is checked once it goes quiet rather than mid-command.
+    // Set when the connected terminal prints something. Check the shell's
+    // directory once it goes quiet, not in the middle of a command.
     std::chrono::steady_clock::time_point remoteSettleAt_{};
     std::uint64_t lastRevision_ = 0;
     Palette palette_;
@@ -149,7 +168,7 @@ private:
     std::filesystem::path pendingCwd_;
     std::chrono::steady_clock::time_point pendingCwdUntil_{};
 
-    // The arrangement lives in the config, so a key and the file cannot disagree.
+    // Layout lives in the config so a keybind and the file can't disagree.
     bool browserVisible() const;
     bool stacked() const;
     int browserWidth() const;
@@ -157,6 +176,8 @@ private:
 
     bool leaderArmed_ = false;
     bool helpOpen_ = false;
+    std::optional<Confirmation> confirm_;
+    Hotspots confirmSpots_;
 
     bool searching_ = false;
     LineEdit searchQuery_;
@@ -169,7 +190,16 @@ private:
     std::chrono::steady_clock::time_point lastClick_{};
     int lastClickRow_ = -1;
 
+    // Set by anything that changes what is on screen outside of an event.
+    bool dirty_ = false;
+    // The shell's cwd, and what it resolved to. Resolving is several syscalls,
+    // so it only happens when the shell reports somewhere new.
+    std::string lastShellCwd_;
+    std::filesystem::path lastShellCwdResolved_;
+    std::chrono::steady_clock::time_point configCheckedAt_{};
+
     std::atomic<bool> ticking_{false};
+    std::atomic<int> tickMs_{100}; // the splash runs before the first beat
     std::thread ticker_;
     bool quitting_ = false;
     int exitCode_ = 0;

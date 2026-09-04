@@ -21,7 +21,7 @@ char32_t decGraphic(char32_t cp) {
     return table[cp - 0x5F];
 }
 
-// The xterm 256 colour cube, for indices past the theme's first sixteen.
+// xterm 256 color cube, for indices past the theme's first sixteen.
 void indexedToRgb(int index, int& r, int& g, int& b) {
     if (index < 16) { r = g = b = 0; return; }
     if (index < 232) {
@@ -135,8 +135,7 @@ void VtParser::groundByte(unsigned char byte) {
         return;
     }
 
-    // UTF-8.
-    if (utf8Remaining_ > 0) {
+    if (utf8Remaining_ > 0) {  // mid UTF-8 character
         if ((byte & 0xC0) != 0x80) {
             utf8Remaining_ = 0;
             screen_.put(0xFFFD);
@@ -238,7 +237,7 @@ void VtParser::csiByte(unsigned char byte) {
         return;
     }
     if (byte == ';' || byte == ':') {
-        // A colon separates sub-parameters (24 bit SGR); most terminals treat both alike.
+        // Colon separates sub-parameters (24 bit SGR). Most terminals treat both alike.
         if (!paramPending_) params_.push_back(-1);
         paramPending_ = false;
         if (params_.size() > kMaxParams) { state_ = State::CsiIgnore; return; }
@@ -298,7 +297,7 @@ void VtParser::dispatchCsi(unsigned char final) {
         case 'l': privateMarker_ ? setPrivateMode(false) : setMode(false); break;
         case 'm': applySgr(); break;
 
-        case 'c': // Device attributes: a VT220 with colour is a safe answer.
+        case 'c': // Device attributes: a VT220 with color is a safe answer.
             if (!privateMarker_) reply("\x1B[?62;1;6;9;15;22c");
             break;
 
@@ -409,15 +408,15 @@ void VtParser::applySgr() {
                 const int kind = param(i + 1, 0);
                 if (kind == 5) {
                     const int index = param(i + 2, 0);
-                    ColorRef colour;
+                    ColorRef color;
                     if (index < 16) {
-                        colour = indexedColor(index);
+                        color = indexedColor(index);
                     } else {
                         int r = 0, g = 0, b = 0;
                         indexedToRgb(index, r, g, b);
-                        colour = rgbColor(r, g, b);
+                        color = rgbColor(r, g, b);
                     }
-                    (foreground ? attrs.fg : attrs.bg) = colour;
+                    (foreground ? attrs.fg : attrs.bg) = color;
                     i += 2;
                 } else if (kind == 2) {
                     (foreground ? attrs.fg : attrs.bg) =
@@ -472,16 +471,15 @@ void VtParser::dispatchOsc() {
     }
 
     if (code == "777") {
-        // 777;<module>;… is the usual private namespace. Ours carries the pid
-        // of the shell `apollo connect` started.
+        // 777;<module>;... is the usual private namespace.
+        // Ours carries the pid of the shell `apollo connect` started.
         if (rest.rfind("apollo;pid;", 0) == 0) {
             screen_.shellPid = std::atoi(rest.c_str() + 11);
         }
         return;
     }
 
-    if (code == "52") {
-        // Clipboard.
+    if (code == "52") {  // clipboard
         const auto split = rest.find(';');
         if (split != std::string::npos && onClipboard) onClipboard(rest.substr(split + 1));
         return;

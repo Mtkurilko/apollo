@@ -17,7 +17,7 @@ std::string lowercase(std::string text) {
 
 } // namespace
 
-void Selection::normalised(int& fromLine, int& fromCol, int& toLine, int& toCol) const {
+void Selection::normalized(int& fromLine, int& fromCol, int& toLine, int& toCol) const {
     const bool forward = anchorLine < headLine ||
                          (anchorLine == headLine && anchorCol <= headCol);
     fromLine = forward ? anchorLine : headLine;
@@ -67,19 +67,39 @@ void Session::close() {
 
 void Session::startReader() {
     readerStop_ = false;
-    // The thread never touches the screen; it only signals that bytes are ready.
+    announced_ = false;
+    // The thread never touches the screen. It only says bytes are ready.
     reader_ = std::thread([this] {
         while (!readerStop_) {
+            // Wait for pump() to take the last batch. poll() below reports the
+            // bytes as ready for as long as they sit unread, so announcing
+            // again before they are drained would just spin the thread.
+            {
+                std::unique_lock<std::mutex> lock(readerLock_);
+                readerWake_.wait(lock, [this] { return !announced_ || readerStop_; });
+            }
+            if (readerStop_) break;
+
             pollfd waiting{pty_.fd(), POLLIN, 0};
             const int ready = ::poll(&waiting, 1, 100);
             if (readerStop_) break;
-            if (ready > 0 && wake_) wake_();
+            if (ready <= 0) continue;
+
+            {
+                std::lock_guard<std::mutex> lock(readerLock_);
+                announced_ = true;
+            }
+            if (wake_) wake_();
         }
     });
 }
 
 void Session::stopReader() {
-    readerStop_ = true;
+    {
+        std::lock_guard<std::mutex> lock(readerLock_);
+        readerStop_ = true;
+    }
+    readerWake_.notify_all();
     if (reader_.joinable()) reader_.join();
 }
 
@@ -94,11 +114,19 @@ void Session::resize(int rows, int cols) {
 bool Session::pump() {
     if (!started_) return false;
 
+    // Cleared before the read, so bytes that land while we are draining get
+    // announced again rather than sitting unnoticed until the next beat.
+    {
+        std::lock_guard<std::mutex> lock(readerLock_);
+        announced_ = false;
+    }
+    readerWake_.notify_one();
+
     bool changed = false;
     char buffer[65536];
     const int historyBefore = screen_.historyLines();
 
-    // Bounded so `yes` or a big `cat` cannot starve the rest of the frame.
+    // Bounded so `yes` or a huge `cat` can't starve the rest of the frame.
     for (int round = 0; round < 32; ++round) {
         const std::ptrdiff_t got = pty_.read(buffer, sizeof(buffer));
         if (got > 0) {
@@ -157,20 +185,18 @@ void Session::paste(const std::string& text) {
     if (text.empty()) return;
     scrollToBottom();
 
-    // Bracketed paste stops editors auto-indenting every pasted line.
+    // Bracketed paste keeps editors from auto-indenting every pasted line.
     if (screen_.bracketedPaste) {
         pty_.write("\x1B[200~");
         pty_.write(text);
         pty_.write("\x1B[201~");
         return;
     }
-    // Without it a newline submits each line; a keyboard sends carriage returns.
+    // Without it every newline submits a line. A real keyboard sends CR.
     std::string safe = text;
     std::replace(safe.begin(), safe.end(), '\n', '\r');
     pty_.write(safe);
 }
-
-void Session::interrupt() { pty_.write("\x03"); }
 
 void Session::sendMouse(int button, int col, int row, bool pressed, bool motion,
                         std::uint8_t mods) {
@@ -188,7 +214,7 @@ void Session::sendMouse(int button, int col, int row, bool pressed, bool motion,
                    std::to_string(row + 1) + (pressed ? "M" : "m"));
         return;
     }
-    // The original encoding cannot express coordinates past 223.
+    // The original encoding can't express coordinates past 223.
     if (col > 222 || row > 222) return;
     std::string out = "\x1B[M";
     out.push_back(static_cast<char>(32 + (pressed ? code : 3)));
@@ -285,7 +311,7 @@ std::chrono::steady_clock::duration Session::commandElapsed() const {
 std::string Session::selectedText() const {
     if (selection.empty()) return "";
     int fromLine = 0, fromCol = 0, toLine = 0, toCol = 0;
-    selection.normalised(fromLine, fromCol, toLine, toCol);
+    selection.normalized(fromLine, fromCol, toLine, toCol);
     return textInRange(fromLine, fromCol, toLine, toCol);
 }
 

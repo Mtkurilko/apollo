@@ -90,7 +90,7 @@ std::vector<const Config::Setting*> ConfigView::settingsFor(Page page) const {
     for (const auto& setting : Config::schema()) {
         if (setting.path.rfind(prefix, 0) == 0) found.push_back(&setting);
     }
-    // Colour overrides sit with the rest of the appearance settings.
+    // Color overrides live with the rest of the appearance settings.
     if (page == Page::Appearance) {
         for (const auto& setting : Config::schema()) {
             if (setting.path.rfind("colors.", 0) == 0) found.push_back(&setting);
@@ -279,7 +279,7 @@ void ConfigView::beginAdd() {
             {"Address", "user@host", false, false, nullptr},
             {"Port", "22", false, true, nullptr},
             {"Key", "~/.ssh/id_ed25519 — leave blank to use a password", false, true, nullptr},
-            // Only worth asking when there is no key to use instead.
+            // Only worth asking if there's no key to use instead.
             {"Password", "needs sshpass; a key is safer", true, true,
              [](const std::vector<std::string>& so_far) { return !so_far[3].empty(); }},
         };
@@ -344,7 +344,7 @@ void ConfigView::advancePrompt() {
     promptInput_.clear();
     ++prompt_.at;
 
-    // A field the earlier answers made pointless is answered as blank.
+    // A field the earlier answers made pointless gets answered blank.
     while (prompt_.at < prompt_.fields.size() &&
            prompt_.fields[prompt_.at].skip && prompt_.fields[prompt_.at].skip(prompt_.answers)) {
         prompt_.answers.emplace_back();
@@ -384,7 +384,7 @@ bool ConfigView::onKey(const KeyChord& chord, const std::string& raw) {
         close();
         return true;
     }
-    // Shift+Tab must not fall into the forward branch: the key is still "tab".
+    // Shift+Tab can't fall into the forward branch. The key is still "tab".
     if ((chord.mods == ModNone && chord.key == "tab") ||
         (chord.mods == ModNone && chord.key == "right")) {
         page_ = (page_ + 1) % pageCount;
@@ -474,7 +474,7 @@ bool ConfigView::onMouse(const Mouse& mouse) {
         return true;
     }
 
-    // A row: the first click selects, a second one on the same row opens it.
+    // First click on a row selects it, second one on the same row opens it.
     const int wanted = hit - kRowBase;
     if (wanted < 0 || wanted >= rowCount()) return true;
     if (editing_ && wanted != row_) cancelEdit();
@@ -502,7 +502,7 @@ Element ConfigView::renderSettings(Page page, const Theme& theme, int width, int
         const bool isDefault = current == setting.defaultValue;
 
         std::string label = prettyLabel(setting.path);
-        if (setting.path.rfind("colors.", 0) == 0) label = "Colour: " + label;
+        if (setting.path.rfind("colors.", 0) == 0) label = "Color: " + label;
         label.resize(static_cast<std::size_t>(labelWidth), ' ');
 
         Element value;
@@ -861,7 +861,7 @@ Element ConfigView::render(const Theme& theme, const DecorationSettings& decorat
     Element content = vbox({
         hbox({
             text(" apollo config ") | bold | color(toFtx(theme.accent)),
-            // The file all of these pages write to.
+            // The file every one of these pages writes to.
             text(elide(paths::contractUser(config_.path()), std::max(0, panelWidth - 26))) |
                 color(toFtx(theme.muted)),
             filler(),

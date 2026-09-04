@@ -1,5 +1,5 @@
 // Typed view of apollo.conf. Every setting is declared once in schema(),
-// which drives validation, the editor, the CLI and completion.
+// which then drives validation/the editor/the CLI/completion.
 #pragma once
 
 #include <chrono>
@@ -22,8 +22,8 @@ struct GeneralSettings {
     std::string defaultConnection;
     bool followCwd = true;   // the browser tracks the shell's directory
     bool confirmQuit = false;
-    // A tab opened for a connection goes away with it, rather than turning
-    // back into a local shell.
+    // Tab opened for a connection goes away with it instead of turning back
+    // into a local shell.
     bool disconnectClosesTab = true;
     KeyChord leader{ModCtrl, "space"};
 };
@@ -47,8 +47,7 @@ struct TerminalSettings {
     bool bell = false;
     bool copyOnSelect = true;
     bool shellIntegration = true; // OSC 7/133: cwd tracking and prompt jumps
-    // OSC 52.
-    bool osc52Clipboard = false;
+    bool osc52Clipboard = false;  // OSC 52, off by default
     std::string wordChars = "_-./@~";
 };
 
@@ -74,8 +73,8 @@ struct BrowserSettings {
     }
 };
 
-// What to do when a file is opened from the browser. One rule per extension,
-// plus "*" for the rest; "ask" means put the choice up and remember it.
+// What happens when you open a file from the browser. One rule per extension
+// plus "*" for the rest. "ask" means show the choice and remember it.
 struct OpenRule {
     std::string match; // an extension without the dot, lowercased, or "*"
     std::string how;   // "ask", "desktop", "editor", or a command line
@@ -101,7 +100,7 @@ public:
     bool exists() const;
     std::filesystem::path path() const { return path_; }
 
-    // Writes a commented starter config. Never overwrites an existing file.
+    // Writes the commented starter config. Never overwrites an existing file.
     static std::string defaultText();
     bool writeDefault(std::string* error = nullptr);
 
@@ -114,11 +113,11 @@ public:
     const std::vector<Bind>& binds() const { return binds_; }
     const std::vector<DeclaredCommand>& commands() const { return commands_; }
     const std::vector<OpenRule>& openRules() const { return open_; }
-    // The rule for a filename: its extension, else "*", else nothing.
+    // Rule for a filename. Its extension, then "*", then nothing.
     const OpenRule* openRuleFor(const std::string& filename) const;
-    // The extension a rule would be remembered under, empty when there is none.
+    // Extension a rule gets remembered under. Empty if there isn't one.
     static std::string openKeyFor(const std::string& filename);
-    // The same value as a rule writes it: "md", ".MD" and "*" all normalise.
+    // Same value as a rule writes it. "md", ".MD" and "*" all normalize.
     static std::string openMatch(const std::string& text);
     bool setOpenRule(const std::string& match, const std::string& how);
     bool removeOpenRule(const std::string& match);
@@ -156,14 +155,12 @@ public:
         std::vector<std::string> choices;
         bool openChoices = false;
         int min = 0, max = 0; // for Int
-
-        std::string typeName() const;
     };
     static const std::vector<Setting>& schema();
     static const Setting* setting(const std::string& path);
     static std::vector<std::string> availableThemes();
     std::string valueOf(const Setting& setting) const;
-    // Empty when the value is acceptable, otherwise the reason it is not.
+    // Empty if the value is fine, otherwise why it isn't.
     static std::string validate(const Setting& setting, const std::string& value);
 
     static const std::vector<Bind>& defaultBinds();
@@ -171,7 +168,7 @@ public:
 private:
     void derive();
     void deriveTheme();
-    // Reads ~/.apollo/themes/<name>.conf: `base = <built-in>` plus a colors block.
+    // Reads ~/.apollo/themes/<name>.conf. `base = <built-in>` plus a colors block.
     std::optional<Theme> loadThemeFile(const std::string& name);
     void deriveBinds();
     void note(const std::string& issue);

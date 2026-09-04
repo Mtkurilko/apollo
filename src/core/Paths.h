@@ -1,4 +1,4 @@
-// Where Apollo keeps its files. Everything user-owned is under ~/.apollo.
+// Where Apollo keeps things. Everything of yours lives under ~/.apollo.
 #pragma once
 
 #include <filesystem>
@@ -6,7 +6,7 @@
 
 namespace apollo::paths {
 
-// $HOME, or the passwd entry if HOME is unset.
+// $HOME, or the passwd entry if HOME isn't set.
 std::filesystem::path home();
 
 std::filesystem::path configDir();
@@ -17,12 +17,10 @@ std::filesystem::path commandsDir();
 
 std::filesystem::path themesDir();
 
-std::filesystem::path stateDir();
-
 std::filesystem::path legacyPropertiesFile();
 
-// Written once the wizard has been through, so an interrupted first run does
-// not mean it is never offered again.
+// Written once the wizard has actually run. An interrupted first run gets
+// offered again instead of being skipped forever.
 std::filesystem::path setupMarker();
 bool setupDone();
 void markSetupDone();

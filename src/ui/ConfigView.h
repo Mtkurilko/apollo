@@ -1,4 +1,4 @@
-// `apollo config` with no arguments. Writes apollo.conf as changes are made.
+// `apollo config` with no arguments. Writes apollo.conf as you change things.
 #pragma once
 
 #include <functional>
@@ -40,7 +40,7 @@ private:
         std::string placeholder;
         bool mask = false;
         bool optional = false;
-        // Answers so far; return true to not ask this one at all.
+        // Gets the answers so far. Return true to skip this field.
         std::function<bool(const std::vector<std::string>&)> skip;
     };
 

@@ -26,13 +26,16 @@ public:
     bool start(const Launch& launch, int rows, int cols, std::string* error = nullptr);
     void resize(int rows, int cols);
 
-    // Reads whatever is available without blocking.
+    // Reads whatever is there. Never blocks.
     std::ptrdiff_t read(char* buffer, std::size_t size);
     bool write(std::string_view bytes);
 
     int fd() const { return fd_; }
     pid_t pid() const { return pid_; }
     bool running() const { return pid_ > 0 && !exited_; }
+    // True when something other than the shell holds the terminal. That's a
+    // running command, whether or not the shell bothered to tell us.
+    bool foregroundBusy() const;
     bool poll();
     int exitCode() const { return exitCode_; }
 

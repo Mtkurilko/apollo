@@ -18,7 +18,7 @@ int charWidth(char32_t cp) {
     const int width = ::wcwidth(static_cast<wchar_t>(cp));
     if (width >= 0) return width;
 
-    // wcwidth returns -1 for anything the locale cannot name; call those one column.
+    // wcwidth returns -1 for anything the locale can't name. Call those one column.
     return 1;
 }
 
@@ -39,12 +39,6 @@ void appendUtf8(std::string& out, char32_t cp) {
     out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
     out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
     out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-}
-
-std::string encodeUtf8(char32_t cp) {
-    std::string out;
-    appendUtf8(out, cp);
-    return out;
 }
 
 const Cell& Row::at(int x) const {
@@ -593,14 +587,14 @@ void Screen::resize(int rows, int cols) {
     rows_ = rows;
 
     if (alternate_) {
-        // A full screen program repaints on SIGWINCH; reflowing the alt buffer only flickers.
+        // Full screen programs repaint on SIGWINCH. Reflowing the alt buffer just flickers.
         cols_ = cols;
         grid_.assign(static_cast<std::size_t>(rows_), Row{});
         for (auto& row : grid_) row.ensure(cols_);
         savedGrid_.resize(static_cast<std::size_t>(rows_));
         for (auto& row : savedGrid_) row.ensure(cols_);
     } else if (widthChanged) {
-        // reflow() rebuilds history and grid and sizes the grid itself.
+        // reflow() rebuilds history and grid, and sizes the grid itself.
         reflow(cols);
         cols_ = cols;
     } else {

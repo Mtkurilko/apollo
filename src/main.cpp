@@ -10,7 +10,7 @@
 #include "ui/App.h"
 
 int main(int argc, char** argv) {
-    // wcwidth needs a UTF-8 locale, or every wide character misaligns the grid.
+    // wcwidth needs a UTF-8 locale or every wide character misaligns the grid.
     std::setlocale(LC_CTYPE, "");
 
     const std::vector<std::string> args(argv + 1, argv + argc);
@@ -35,8 +35,8 @@ int main(int argc, char** argv) {
     apollo::cli::Outcome outcome = apollo::cli::dispatch(args, config);
     if (!outcome.launch) return outcome.code;
 
-    // The wizard leaves a marker behind, so a first run that was interrupted
-    // gets another chance rather than never being offered again.
+    // The wizard leaves a marker behind. An interrupted first run gets another
+    // shot instead of never being offered again.
     if (!apollo::paths::setupDone() && outcome.options.connect.empty() &&
         outcome.options.command.empty()) {
         outcome.options.runSetup = true;

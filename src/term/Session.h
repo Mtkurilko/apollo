@@ -1,14 +1,16 @@
-// One terminal: pty, parser, screen, and the state of looking at it.
+// One terminal. Pty, parser, screen, and the state of looking at it.
 //
-// A reader thread only signals that bytes are ready; the reading and parsing
-// happen on the UI thread in pump(), so the screen has one writer and needs
-// no locking.
+// The reader thread only signals that bytes are ready. Reading and parsing
+// both happen on the UI thread in pump(), so the screen has exactly one
+// writer and needs no locking.
 #pragma once
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -26,7 +28,7 @@ struct Selection {
     int headLine = 0, headCol = 0;
 
     bool empty() const { return !active || (anchorLine == headLine && anchorCol == headCol); }
-    void normalised(int& fromLine, int& fromCol, int& toLine, int& toCol) const;
+    void normalized(int& fromLine, int& fromCol, int& toLine, int& toCol) const;
 };
 
 class Session {
@@ -51,6 +53,8 @@ public:
     void close();
 
     bool running() const { return pty_.running(); }
+    // Something is running in here that quitting would cut off.
+    bool busy() const { return screen_.commandRunning || pty_.foregroundBusy(); }
     int exitCode() const { return pty_.exitCode(); }
     const std::string& title() const { return options_.title; }
     void setTitle(const std::string& title) { options_.title = title; }
@@ -68,7 +72,6 @@ public:
     void sendText(const std::string& text);
     void paste(const std::string& text);
     void sendMouse(int button, int col, int row, bool pressed, bool motion, std::uint8_t mods);
-    void interrupt();
 
     // --- looking at the scrollback ----------------------------------------
     int scrollOffset() const { return scrollOffset_; }
@@ -87,11 +90,11 @@ public:
     Selection selection;
     std::string selectedText() const;
 
-    // How long the current command has run, when the shell marks it (OSC 133).
+    // How long the current command has run, if the shell marks it (OSC 133).
     std::chrono::steady_clock::duration commandElapsed() const;
     bool commandRunning() const { return screen_.commandRunning; }
 
-    // Called from the reader thread when bytes arrive.
+    // Called from the reader thread when bytes show up.
     void setWakeup(std::function<void()> wake);
     std::function<void(const std::string&)> onClipboard;
 
@@ -107,6 +110,11 @@ private:
     std::thread reader_;
     std::atomic<bool> readerStop_{false};
     std::function<void()> wake_;
+    // The reader announces bytes once and then waits for pump() to take them.
+    // poll() keeps reporting unread bytes, so without this it would spin.
+    std::mutex readerLock_;
+    std::condition_variable readerWake_;
+    bool announced_ = false;
 
     int scrollOffset_ = 0;
     bool started_ = false;

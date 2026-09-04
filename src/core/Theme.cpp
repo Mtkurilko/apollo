@@ -56,10 +56,6 @@ std::string Rgb::hex() const {
     return buffer;
 }
 
-float Rgb::luma() const {
-    return (0.2126f * r + 0.7152f * g + 0.0722f * b) / 255.0f;
-}
-
 Rgb Rgb::mix(const Rgb& other, float t) const {
     const auto lerp = [t](std::uint8_t a, std::uint8_t b) {
         return static_cast<std::uint8_t>(a + (b - a) * t);

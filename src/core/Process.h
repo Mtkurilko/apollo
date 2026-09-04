@@ -1,4 +1,4 @@
-// Running other programs. Takes argv arrays, not shell strings.
+// Running other programs. argv arrays, never shell strings.
 #pragma once
 
 #include <chrono>
@@ -17,10 +17,10 @@ struct Result {
     bool ok() const { return exitCode == 0 && !timedOut; }
 };
 
-// Extra "NAME=value" entries laid over the inherited environment.
+// Extra "NAME=value" entries on top of the inherited environment.
 using Env = std::vector<std::string>;
 
-// Runs argv[0] found on PATH, captures both streams, and waits.
+// Runs argv[0] off PATH, captures both streams, waits.
 Result run(const std::vector<std::string>& argv,
            std::chrono::milliseconds timeout = std::chrono::seconds(20),
            const std::string& workingDir = "",
@@ -40,7 +40,7 @@ bool detach(const std::vector<std::string>& argv, const std::string& workingDir 
 
 std::string userShell();
 
-// The desktop's clipboard, whichever one is installed.
+// The desktop clipboard, whichever one is installed.
 bool clipboardWrite(const std::string& text);
 std::optional<std::string> clipboardRead();
 

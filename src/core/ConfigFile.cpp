@@ -128,16 +128,6 @@ int ConfigFile::asInt(const std::string& value, int fallback) {
     }
 }
 
-float ConfigFile::asFloat(const std::string& value, float fallback) {
-    try {
-        std::size_t used = 0;
-        const float parsed = std::stof(trim(value), &used);
-        return used ? parsed : fallback;
-    } catch (...) {
-        return fallback;
-    }
-}
-
 std::vector<std::string> ConfigFile::split(const std::string& value, char sep) {
     std::vector<std::string> parts;
     std::string current;
@@ -150,7 +140,7 @@ std::vector<std::string> ConfigFile::split(const std::string& value, char sep) {
     }
     parts.push_back(unquote(trim(current)));
 
-    // A trailing separator means an empty last field the caller never wants.
+    // Trailing separator leaves an empty last field nobody wants.
     if (parts.size() > 1 && parts.back().empty()) parts.pop_back();
     return parts;
 }
@@ -262,7 +252,7 @@ void ConfigFile::reparse() {
             if (!nested.load(included)) {
                 for (const auto& d : nested.diagnostics()) diags_.push_back(d);
             }
-            // Sourced entries carry line -1: set() must never rewrite another file.
+            // Sourced entries carry line -1. set() must never rewrite another file.
             const auto adopt = [](auto&& self, ConfigNode& into, const ConfigNode& from) -> void {
                 std::vector<ConfigEntry> incoming;
                 for (const auto& e : from.entries) {
@@ -273,7 +263,7 @@ void ConfigFile::reparse() {
                 into.entries.insert(into.entries.begin(), incoming.begin(), incoming.end());
 
                 for (const auto& c : from.children) {
-                    // Merge into a section of the same name, or lookups only ever see the first.
+                    // Merge same-named sections or lookups only ever see the first.
                     ConfigNode* existing = nullptr;
                     for (auto& candidate : into.children) {
                         if (candidate.name == c.name && candidate.label == c.label) {
@@ -327,7 +317,7 @@ bool ConfigFile::save(const fs::path& path, std::string* error) const {
     std::error_code ec;
     if (path.has_parent_path() && !paths::ensureDir(path.parent_path(), error)) return false;
 
-    // Write beside the target and rename, so an interrupted save cannot truncate.
+    // Write next to the target then rename. An interrupted save can't truncate.
     const fs::path temp = path.string() + ".tmp";
     {
         std::ofstream out(temp, std::ios::trunc);
@@ -378,7 +368,7 @@ bool ConfigFile::resolve(const std::string& path,
 
 namespace {
 
-// Accepts both `connection lab { }` and `connection { lab { } }`.
+// Takes both `connection lab { }` and `connection { lab { } }`.
 const ConfigNode* descend(const ConfigNode* node,
                           const std::vector<std::string>& path,
                           std::size_t index) {
@@ -451,12 +441,12 @@ ConfigNode* ConfigFile::findSection(const std::string& path, bool create) {
     if (!resolve(path, parts, last)) return nullptr;
     parts.push_back(last);
 
-    // The tree is rebuilt from text after any insertion, so const-walk first.
+    // Tree gets rebuilt from text after any insertion, so const-walk first.
     const ConfigNode* existing = descend(&root_, parts, 0);
     if (existing) return const_cast<ConfigNode*>(existing);
     if (!create) return nullptr;
 
-    // Create the missing block at the end of the file.
+    // Missing block, so make one at the end of the file.
     std::string header;
     if (parts.size() == 1) header = parts[0];
     else if (parts.size() == 2) header = parts[0] + " " + parts[1];
@@ -503,7 +493,7 @@ void ConfigFile::set(const std::string& path, const std::string& value) {
         }
     }
 
-    // Insert before the closing brace, aligned with the neighbours.
+    // Insert before the closing brace, lined up with its neighbors.
     const int at = node->closeLine >= 0 ? node->closeLine
                                         : static_cast<int>(lines_.size());
     const std::string indent = node == &root_
@@ -549,7 +539,7 @@ bool ConfigFile::removeSection(const std::string& path) {
                                           : static_cast<int>(lines_.size()) - 1;
     lines_.erase(lines_.begin() + node->openLine, lines_.begin() + last + 1);
 
-    // Leave at most one blank line where the block used to be.
+    // At most one blank line where the block used to be.
     while (node->openLine > 0 && node->openLine < static_cast<int>(lines_.size()) &&
            trim(lines_[node->openLine]).empty() &&
            trim(lines_[node->openLine - 1]).empty()) {

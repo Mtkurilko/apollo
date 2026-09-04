@@ -7,20 +7,20 @@ namespace apollo::ui {
 
 using namespace ftxui;
 
-Color toFtx(const Rgb& colour) { return Color::RGB(colour.r, colour.g, colour.b); }
+Color toFtx(const Rgb& color) { return Color::RGB(color.r, color.g, color.b); }
 
-Color resolve(term::ColorRef colour, const Theme& theme, bool foreground) {
-    if (term::isDefaultColor(colour)) {
+Color resolve(term::ColorRef color, const Theme& theme, bool foreground) {
+    if (term::isDefaultColor(color)) {
         return foreground ? toFtx(theme.fg) : toFtx(theme.bg);
     }
-    if (term::isIndexedColor(colour)) {
-        const int index = term::colorIndex(colour);
+    if (term::isIndexedColor(color)) {
+        const int index = term::colorIndex(color);
         if (index < 16) return toFtx(theme.ansi[static_cast<std::size_t>(index)]);
         return Color::Palette256(static_cast<Color::Palette256>(index));
     }
-    return Color::RGB(static_cast<std::uint8_t>((colour >> 16) & 0xFF),
-                      static_cast<std::uint8_t>((colour >> 8) & 0xFF),
-                      static_cast<std::uint8_t>(colour & 0xFF));
+    return Color::RGB(static_cast<std::uint8_t>((color >> 16) & 0xFF),
+                      static_cast<std::uint8_t>((color >> 8) & 0xFF),
+                      static_cast<std::uint8_t>(color & 0xFF));
 }
 
 BorderStyle borderStyle(const std::string& name) {
@@ -79,7 +79,7 @@ std::string elide(const std::string& text, int width) {
 
 namespace {
 
-// Whole characters, so an arrow key cannot strand the cursor mid-sequence.
+// Whole characters, or an arrow key strands the cursor mid-sequence.
 int stepLeft(const std::string& text, int at) {
     if (at <= 0) return 0;
     --at;
@@ -143,7 +143,7 @@ bool LineEdit::onKey(const KeyChord& chord, const std::string& raw) {
         if (chord.key == "delete") { eraseRange(cursor, stepRight(text, cursor)); return true; }
     }
 
-    // Anything printable, including whole UTF-8 characters, is inserted as-is.
+    // Anything printable, whole UTF-8 characters included, goes in as-is.
     if (!raw.empty() && static_cast<unsigned char>(raw[0]) >= 0x20 &&
         static_cast<unsigned char>(raw[0]) != 0x7F) {
         text.insert(static_cast<std::size_t>(cursor), raw);
@@ -176,7 +176,7 @@ Element LineEdit::render(const Theme& theme, const std::string& placeholder, boo
     Elements parts;
     parts.push_back(ftxui::text(before) | color(toFtx(theme.fg)));
     if (focused) {
-        // Draw the cursor as a block over the character it sits on.
+        // Cursor is a block drawn over whatever character it sits on.
         std::size_t width = 1;
         if (!after.empty()) {
             const unsigned char lead = static_cast<unsigned char>(after[0]);
@@ -235,7 +235,7 @@ Element panel(const std::string& title,
         header.push_back(text(" " + rightLabel + " ") | color(toFtx(theme.muted)));
     }
 
-    // Empty text() elements would leave two blank rows where the title was.
+    // Empty text() elements leave two blank rows where the title was.
     Elements rows;
     if (decoration.titleBar) {
         rows.push_back(hbox(std::move(header)));

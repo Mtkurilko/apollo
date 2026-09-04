@@ -22,7 +22,7 @@ void line(const std::string& left, const std::string& right) {
     std::cout << "  " << std::left << std::setw(28) << left << right << "\n";
 }
 
-// Mask on the key's suffix, not a list, so a new secret setting cannot be forgotten.
+// Mask on the key suffix, not a list. A new secret setting can't be forgotten.
 bool isSecret(const std::string& path) {
     return path.size() >= 8 && path.compare(path.size() - 8, 8, "password") == 0;
 }
@@ -343,7 +343,7 @@ int listCommands(const Config& config) {
 }
 
 // --- talking to the Apollo we are already inside --------------------------- Without this,
-// `apollo` typed in Apollo's own terminal starts a second Apollo nested in the first.
+// `apollo` typed inside Apollo would otherwise nest a second one in the first.
 
 std::string controlMessageFor(const std::vector<std::string>& args) {
     if (args.empty()) return "home";
@@ -446,7 +446,7 @@ std::vector<std::string> completionsFor(const std::vector<std::string>& words,
 }
 
 int printCompletionScript(const std::string& shell) {
-    // Both scripts contain `)" `, which would end an ordinary raw string early.
+    // Both scripts contain `)" `, which would close an ordinary raw string early.
     if (shell == "zsh") {
         std::cout << R"APOLLO(#compdef apollo
 # Apollo completion for zsh. Install with:
@@ -600,13 +600,13 @@ Outcome dispatch(const std::vector<std::string>& args, Config& config) {
     if (first == "connect") {
         outcome.launch = true;
         outcome.options.connect = rest.empty() ? " " : rest[0];
-        // A space means "resolve it for me": empty would mean "no connection".
+        // A space means "resolve it for me". Empty would mean "no connection".
         if (outcome.options.connect == " ") outcome.options.connect.clear();
 
         std::string error;
         if (!config.resolveConnection(rest.empty() ? "" : rest[0], error)) {
-            // Nothing named and several to choose from: open the window and
-            // let it ask, rather than printing a list to a shell.
+            // Nothing named and several to pick from. Open the window and let
+            // it ask instead of dumping a list into the shell.
             if (rest.empty() && config.connections().size() > 1) {
                 outcome.options.connect.clear();
                 outcome.options.chooseConnection = true;
