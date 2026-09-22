@@ -154,6 +154,31 @@ Result run(const std::vector<std::string>& argv,
     return spawnAndCollect(argv, timeout, workingDir, extraEnv);
 }
 
+int runAttached(const std::vector<std::string>& argv, const Env& extraEnv) {
+    if (argv.empty()) return 127;
+
+    std::vector<char*> raw;
+    raw.reserve(argv.size() + 1);
+    for (const auto& arg : argv) raw.push_back(const_cast<char*>(arg.c_str()));
+    raw.push_back(nullptr);
+
+    std::vector<std::string> envStorage = mergedEnv(extraEnv);
+    std::vector<char*> envp;
+    envp.reserve(envStorage.size() + 1);
+    for (auto& entry : envStorage) envp.push_back(entry.data());
+    envp.push_back(nullptr);
+
+    pid_t pid = -1;
+    if (posix_spawnp(&pid, argv[0].c_str(), nullptr, nullptr, raw.data(), envp.data()) != 0) {
+        return 127;
+    }
+    int wstatus = 0;
+    while (::waitpid(pid, &wstatus, 0) < 0 && errno == EINTR) {}
+    if (WIFEXITED(wstatus)) return WEXITSTATUS(wstatus);
+    if (WIFSIGNALED(wstatus)) return 128 + WTERMSIG(wstatus);
+    return 1;
+}
+
 Result shell(const std::string& command,
              std::chrono::milliseconds timeout,
              const std::string& workingDir) {

@@ -77,6 +77,8 @@ private:
     Hotspots spots_;
 
     bool editing_ = false;
+    // Setting the leader: the next key pressed becomes it.
+    bool capturingLeader_ = false;
     LineEdit editor_;
     std::string editingPath_;
     std::string error_;

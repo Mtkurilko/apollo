@@ -71,10 +71,12 @@ struct LineEdit {
     void clear();
     bool onKey(const KeyChord& chord, const std::string& raw);
 
+    // `width` > 0 keeps it to that many columns, scrolled to the cursor.
     ftxui::Element render(const Theme& theme,
                           const std::string& placeholder,
                           bool focused,
-                          bool mask = false) const;
+                          bool mask = false,
+                          int width = 0) const;
 };
 
 // Cuts a string to `width` columns. Adds an ellipsis if it had to cut.

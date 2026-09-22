@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
+#include <sstream>
 #include <utility>
 
 #include <ftxui/component/event.hpp>
@@ -28,10 +29,45 @@ namespace {
 const Event kRepaint = Event::Special("apollo:repaint");
 const Event kControl = Event::Special("apollo:control");
 const Event kRemote = Event::Special("apollo:remote");
+const Event kTransfer = Event::Special("apollo:transfer");
+
+// A leader held this long gets a list of what can follow it.
+constexpr auto kLeaderKeysDelay = std::chrono::milliseconds(450);
 
 // The two answers to a confirmation. Shared by the renderer and the click handler.
 constexpr int kConfirmYes = 1;
 constexpr int kConfirmNo = 2;
+
+// Two or three words per action, for the list a held leader shows. The
+// palette and F1 have room for the full sentence.
+std::string shortLabel(const Bind& bind) {
+    static const std::map<std::string, std::string> labels = {
+        {"command_palette", "commands"},     {"focus_terminal", "terminal"},
+        {"focus_browser", "browser"},        {"focus_next", "other pane"},
+        {"toggle_browser", "toggle browser"},  {"toggle_layout", "stack / split"},
+        {"toggle_hidden", "dotfiles"},       {"browser_back", "back"},
+        {"browser_forward", "forward"},      {"browser_up", "up a folder"},
+        {"browser_filter", "filter"},        {"browser_sort", "sort"},
+        {"browser_reverse", "reverse sort"}, {"copy_path", "copy path"},
+        {"paste_path", "go to copied path"}, {"grow_pane", "wider"},
+        {"shrink_pane", "narrower"},         {"new_tab", "new tab"},
+        {"close_tab", "close tab"},          {"next_tab", "next tab"},
+        {"prev_tab", "previous tab"},        {"scroll_up", "scroll up"},
+        {"scroll_down", "scroll down"},      {"scroll_top", "top"},
+        {"scroll_bottom", "bottom"},         {"prev_prompt", "previous command"},
+        {"next_prompt", "next command"},     {"copy", "copy"},
+        {"paste", "paste"},                  {"clear", "clear"},
+        {"search", "search"},                {"open_config", "settings"},
+        {"edit_config", "edit config"},      {"setup", "setup"},
+        {"reload_config", "reload config"},  {"help", "all keys"},
+        {"connect", "connect"},              {"disconnect", "disconnect"},
+        {"open_with", "open with…"},         {"transfer", "send across ⇅"},
+        {"quit", "quit"},
+    };
+    if (!bind.args.empty()) return bind.describeAction(); // run deploy, exec make, ...
+    const auto it = labels.find(bind.action);
+    return it != labels.end() ? it->second : bind.action;
+}
 
 // Just enough base64 to read an OSC 52 clipboard payload.
 std::string decodeBase64(const std::string& text) {
@@ -63,7 +99,8 @@ App::App(Config& config, Options options)
       screen_(ScreenInteractive::Fullscreen()),
       remoteLister_([this] { screen_.PostEvent(kRemote); }),
       configView_(config),
-      onboard_(config) {
+      onboard_(config),
+      transfers_([this] { screen_.PostEvent(kTransfer); }) {
     applyConfig();
 
     browser_.onEnterDirectory = [this](const fs::path& path) {
@@ -95,13 +132,15 @@ App::App(Config& config, Options options)
         copyToClipboard(browser_.path().string());
     };
     browser_.onCycleSort = [this] { act("browser_sort", {}); };
+    browser_.onSend = [this] { transferSelected(); };
 
     configView_.onChanged = [this] { applyConfig(); };
     configView_.onEditExternally = [this] { act("edit_config", {}); };
     onboard_.onChanged = [this] { applyConfig(); };
     onboard_.onFinished = [this] {
         applyConfig();
-        say("Leader is " + config_.general().leader.describe() + " — press it, then Space");
+        say("Leader is " + config_.general().leader.describe() + " — " +
+            keyHintFor("command_palette") + " for commands, F1 for every key");
     };
 }
 
@@ -397,7 +436,12 @@ std::string App::clipboard() const {
 
 std::string App::keyHintFor(const std::string& action) const {
     for (const auto& bind : config_.binds()) {
-        if (bind.action == action) return bind.chord.describe();
+        if (bind.action != action) continue;
+        if (!(bind.chord.mods & ModLeader)) return bind.chord.describe();
+        // "Space ," reads better than "Leader ," once you know what the leader is.
+        KeyChord bare = bind.chord;
+        bare.mods &= static_cast<std::uint8_t>(~ModLeader);
+        return config_.general().leader.describe() + " " + bare.describe();
     }
     return "";
 }
@@ -549,7 +593,8 @@ void App::act(const std::string& action, const std::vector<std::string>& args) {
             if (const term::Session* running = busyTab()) {
                 askConfirm({"Something is still running in " + running->title() + ".",
                             "Leaving now stops it.",
-                            [this] { quitting_ = true; screen_.Exit(); }});
+                            [this] { quitting_ = true; screen_.Exit(); }, "quit anyway",
+                            "stay"});
                 return;
             }
         }
@@ -637,6 +682,8 @@ void App::act(const std::string& action, const std::vector<std::string>& args) {
         say("disconnected from " + was);
         return;
     }
+
+    if (action == "transfer") { transferSelected(); return; }
 
     if (action == "open_with") {
         const BrowserView::Entry* entry = browser_.selected();
@@ -789,7 +836,7 @@ void App::askHowToOpen(const fs::path& path) {
                                  std::string problem;
                                  if (config_.setOpenRule(key, how) && config_.save(&problem)) {
                                      say("." + key + " files open with " + how +
-                                         " — Leader , to change it");
+                                         " — " + keyHintFor("open_config") + " to change it");
                                  } else if (!problem.empty()) {
                                      say(problem, true);
                                  }
@@ -815,7 +862,6 @@ void App::pickConnection() {
     for (const auto& conn : config_.connections()) {
         std::string detail = conn.describe();
         if (!conn.remoteDir.empty()) detail += "  " + elidePath(conn.remoteDir, 24);
-        if (conn.name == config_.general().defaultConnection) detail += "  (default)";
         detail += conn.keyPath.empty() ? (conn.password.empty() ? "  agent" : "  password")
                                        : "  key";
         items.push_back({conn.name, detail, "ssh", "",
@@ -866,7 +912,10 @@ void App::openPalette() {
 
 std::chrono::milliseconds App::tickInterval() const {
     // The only reasons to beat quickly are things that move on their own.
-    if (boot_.running() || browser_.loading()) return std::chrono::milliseconds(100);
+    if (boot_.running() || browser_.loading() || leaderArmed_) {
+        return std::chrono::milliseconds(100);
+    }
+    if (transfers_.running() > 0) return std::chrono::milliseconds(500);
 
     const term::Session* session = active();
     if (session && session->commandRunning()) {
@@ -970,7 +1019,8 @@ bool App::tick() {
             invalidate();
         } else if (status_.empty()) {
             say(session->title() + " exited " + std::to_string(session->exitCode()) +
-                    " — Leader C for a shell, Leader Q to leave",
+                    " — " + keyHintFor("new_tab") + " for a shell, " + keyHintFor("quit") +
+                    " to leave",
                 true);
         }
     }
@@ -980,7 +1030,12 @@ bool App::tick() {
     // The splash, and the spinner and elapsed seconds of a running command, are
     // the only things that move on their own. Everything else waits for news.
     const term::Session* session = active();
-    const bool animating = boot_.running() || (session && session->commandRunning());
+    // A held leader grows its list of keys after a moment; a transfer counts seconds.
+    const bool leaderKeysDue =
+        leaderArmed_ && std::chrono::steady_clock::now() - leaderArmedAt_ >= kLeaderKeysDelay &&
+        std::chrono::steady_clock::now() - leaderArmedAt_ < kLeaderKeysDelay * 2;
+    const bool animating = boot_.running() || (session && session->commandRunning()) ||
+                           transfers_.running() > 0 || leaderKeysDue;
     return std::exchange(dirty_, false) || animating;
 }
 
@@ -1138,8 +1193,13 @@ bool App::onEvent(const Event& event) {
         for (const auto& message : control_.take()) handleControl(message);
         return true;
     }
+    if (event == kTransfer) {
+        finishTransfers();
+        return true;
+    }
     if (event == kRemote) {
         if (const auto listing = remoteLister_.take()) {
+            if (listing->ok) lastRemote_ = listing->connection;
             browser_.showRemote(*listing, config_.browser());
             if (!listing->ok && listing->connection == browser_.connection()) {
                 say(listing->error, true);
@@ -1174,6 +1234,10 @@ bool App::onEvent(const Event& event) {
             return true;
         }
         if (onboard_.isOpen()) return onboard_.onMouse(mouse);
+        if (transferForm_.isOpen()) {
+            if (transferForm_.onMouse(mouse) == TransferForm::Result::Submit) submitTransfer();
+            return true;
+        }
         if (configView_.isOpen()) return configView_.onMouse(mouse);
         if (palette_.isOpen()) return palette_.onMouse(mouse);
         if (helpOpen_) {
@@ -1207,6 +1271,10 @@ bool App::onEvent(const Event& event) {
         onboard_.onKey(chord, raw);
         return true;
     }
+    if (transferForm_.isOpen()) {
+        if (transferForm_.onKey(chord, raw) == TransferForm::Result::Submit) submitTransfer();
+        return true;
+    }
     if (configView_.isOpen()) return configView_.onKey(chord, raw);
     if (palette_.isOpen()) return palette_.onKey(chord, raw);
 
@@ -1238,31 +1306,50 @@ bool App::onEvent(const Event& event) {
 
     if (leaderArmed_) {
         leaderArmed_ = false;
-        if (chord == config_.general().leader) {
-            if (term::Session* session = active()) session->sendKey(chord, raw);
-            return true;
-        }
+        if (chord.key == "escape" && chord.mods == ModNone) return true; // never mind
+
         KeyChord withLeader = chord;
         withLeader.mods |= ModLeader;
-        if (!runBind(withLeader)) {
-            say("nothing bound to " + withLeader.describe());
+        if (runBind(withLeader)) return true;
+
+        // The same key twice sends it through, for the program that wanted it.
+        if (chord == leaderChord_) {
+            deliver(leaderChord_, leaderRaw_);
+            return true;
         }
+        // A Space that turned out not to be for Apollo was just a space. Type
+        // it, then whatever came after, and nothing is lost.
+        if (leaderSoft_) {
+            deliver(leaderChord_, leaderRaw_);
+            if (!chord.empty() && runBind(chord)) return true;
+            deliver(chord, raw);
+            return true;
+        }
+        say("nothing bound to " + withLeader.describe());
         return true;
     }
-    if (!chord.empty() && chord == config_.general().leader) {
+    if (const LeaderPress press = leaderPress(chord); press != LeaderPress::None) {
         leaderArmed_ = true;
+        leaderSoft_ = press == LeaderPress::Soft;
+        leaderChord_ = chord;
+        leaderRaw_ = raw;
+        leaderArmedAt_ = std::chrono::steady_clock::now();
         return true;
     }
 
     if (!chord.empty() && runBind(chord)) return true;
+    deliver(chord, raw);
+    return true;
+}
 
+void App::deliver(const KeyChord& chord, const std::string& raw) {
     if (focus_ == Focus::Browser) {
         if (browser_.filtering()) {
             browser_.onFilterKey(chord, raw, config_.browser());
-            return true;
+            return;
         }
-        if (chord.key == "tab") { focus_ = Focus::Terminal; return true; }
-        if (browser_.onKey(chord, config_.browser())) return true;
+        if (chord.key == "tab") { focus_ = Focus::Terminal; return; }
+        if (browser_.onKey(chord, config_.browser())) return;
         // Anything the browser doesn't want goes to the terminal. Typing never vanishes.
         focus_ = Focus::Terminal;
     }
@@ -1270,9 +1357,221 @@ bool App::onEvent(const Event& event) {
     if (term::Session* session = active()) {
         if (!session->selection.empty()) session->selection = term::Selection{};
         session->sendKey(chord, raw);
-        return true;
     }
-    return true;
+}
+
+// --- the leader ------------------------------------------------------------
+
+App::LeaderPress App::leaderPress(const KeyChord& chord) const {
+    const KeyChord& leader = config_.general().leader;
+    if (chord.empty()) return LeaderPress::None;
+
+    // These are the leader everywhere, even inside vim.
+    for (const auto& anywhere : config_.general().leaderAnywhere) {
+        if (chord == anywhere) return LeaderPress::Hard;
+    }
+    if (!leader.typesText()) return chord == leader ? LeaderPress::Hard : LeaderPress::None;
+
+    // A leader that types something can't take every press of it.
+    if (chord != leader) return LeaderPress::None;
+    return leaderIsFree() ? LeaderPress::Soft : LeaderPress::None;
+}
+
+bool App::leaderIsFree() const {
+    if (focus_ == Focus::Browser && browserVisible()) {
+        // Mid-filter or mid-name, a space is part of what you're typing.
+        return !browser_.filtering() && browser_.findExpired();
+    }
+    const term::Session* session = active();
+    return session && session->atEmptyPrompt();
+}
+
+Element App::renderLeaderKeys(int width) {
+    std::vector<Bind> binds;
+    for (const auto& bind : config_.binds()) {
+        if (bind.chord.mods & ModLeader) binds.push_back(bind);
+    }
+    // Letters and symbols first, then the named keys: the order you'd look.
+    std::stable_sort(binds.begin(), binds.end(), [](const Bind& a, const Bind& b) {
+        const bool aShort = a.chord.key.size() == 1;
+        const bool bShort = b.chord.key.size() == 1;
+        if (aShort != bShort) return aShort;
+        return a.chord < b.chord;
+    });
+    if (binds.empty()) return text("");
+
+    const int panelWidth = std::min(width - 2, 100);
+    const int columns = std::clamp((panelWidth - 2) / 24, 1, 4);
+    const int columnWidth = (panelWidth - 2) / columns;
+    const int perColumn = (static_cast<int>(binds.size()) + columns - 1) / columns;
+
+    Elements rows;
+    for (int i = 0; i < perColumn; ++i) {
+        Elements cells;
+        for (int c = 0; c < columns; ++c) {
+            const std::size_t index = static_cast<std::size_t>(i + c * perColumn);
+            if (index >= binds.size()) {
+                cells.push_back(text("") | size(WIDTH, EQUAL, columnWidth));
+                continue;
+            }
+            KeyChord bare = binds[index].chord;
+            bare.mods &= static_cast<std::uint8_t>(~ModLeader);
+            std::string key = bare.describe();
+            key.resize(std::max<std::size_t>(key.size(), 7), ' ');
+            const std::string what = shortLabel(binds[index]);
+            cells.push_back(hbox({
+                text(" " + key) | color(toFtx(theme_->accent)) | bold,
+                text(elide(what, columnWidth - 9)) | color(toFtx(theme_->fg)),
+                filler(),
+            }) | size(WIDTH, EQUAL, columnWidth));
+        }
+        rows.push_back(hbox(std::move(cells)));
+    }
+
+    const std::string title = " " + leaderChord_.describe() + " then… ";
+    const std::string footer = leaderSoft_ ? "any other key types " + leaderChord_.describe() +
+                                                 " and itself · Esc cancels"
+                                           : "Esc cancels";
+    Element box = clear_under(window(text(title) | bold | color(toFtx(theme_->accent)),
+                         vbox({vbox(std::move(rows)),
+                               text(" " + footer) | color(toFtx(theme_->muted))}))) |
+                  color(toFtx(theme_->border)) | bgcolor(toFtx(theme_->surface)) |
+                  size(WIDTH, EQUAL, panelWidth);
+    // Sits above the status bar, out of the way of whatever you were reading.
+    return vbox({filler(), hbox({filler(), std::move(box), filler()}), text(""), text("")});
+}
+
+// --- moving files between machines -----------------------------------------
+
+std::string App::uploadDirFor(const Connection& conn) {
+    return conn.remoteDir.empty() ? "~" : conn.remoteDir;
+}
+
+std::vector<std::string> App::uploadChoices() const {
+    // The machine you were last looking at, then any others open in a tab,
+    // then the rest: most likely first.
+    std::vector<std::string> order;
+    const auto add = [&](const std::string& name) {
+        if (!name.empty() && config_.connection(name) &&
+            std::find(order.begin(), order.end(), name) == order.end()) {
+            order.push_back(name);
+        }
+    };
+    add(lastRemote_);
+    for (const auto& session : tabs_) add(session->connection());
+    for (const auto& conn : config_.connections()) add(conn.name);
+    return order;
+}
+
+void App::transferSelected() {
+    const BrowserView::Entry* entry = browser_.selected();
+    if (!entry) { say("select a file in the browser first"); return; }
+    const std::string source = (fs::path(browser_.where()) / entry->name).string();
+
+    if (browser_.remote()) {
+        const Connection* conn = config_.connection(browser_.connection());
+        if (!conn) return;
+        // Down to wherever this machine's side of the pane was last.
+        openTransfer({*conn, transfer::Direction::Download, {source},
+                      paths::contractUser(browser_.path())},
+                     entry->directory);
+        return;
+    }
+
+    if (config_.connections().empty()) {
+        say("no SSH destinations yet — add one with " + keyHintFor("open_config") +
+                ", then Connections",
+            true);
+        return;
+    }
+    // One destination is unambiguous. With more, you always say which.
+    if (config_.connections().size() == 1) {
+        const Connection& conn = config_.connections().front();
+        openTransfer({conn, transfer::Direction::Upload, {paths::contractUser(source)},
+                      uploadDirFor(conn)},
+                     entry->directory);
+        return;
+    }
+
+    std::vector<Palette::Item> items;
+    const bool directory = entry->directory;
+    for (const auto& name : uploadChoices()) {
+        const Connection conn = *config_.connection(name);
+        const std::string where = uploadDirFor(conn);
+        std::string detail = conn.describe() + "  " + where;
+        for (const auto& session : tabs_) {
+            if (session->connection() == name) { detail += "  (open)"; break; }
+        }
+        items.push_back({conn.name, detail, "ssh", "", [this, conn, source, directory] {
+                             openTransfer({conn, transfer::Direction::Upload,
+                                           {paths::contractUser(source)}, uploadDirFor(conn)},
+                                          directory);
+                         }});
+    }
+    palette_.open(std::move(items), "Send " + elide(entry->name, 28) + " to");
+}
+
+void App::openTransfer(transfer::Job job, bool directory) {
+    transferForm_.open(job, directory);
+    invalidate();
+}
+
+void App::submitTransfer() {
+    transfer::Job job = transferForm_.job();
+    // scp gets this side's paths as they are, with no shell to expand ~.
+    if (job.direction == transfer::Direction::Upload) {
+        for (auto& source : job.sources) source = paths::expandUser(source);
+    } else {
+        job.destination = paths::expandUser(job.destination);
+    }
+    if (const std::string problem = transfer::checkLocal(job); !problem.empty()) {
+        transferForm_.fail(problem);
+        return;
+    }
+    transferForm_.checking(transfers_.verify(job));
+}
+
+void App::finishTransfers() {
+    // Checks first: one that passed starts the copy it was checking.
+    for (const auto& verdict : transfers_.takeVerdicts()) {
+        if (!transferForm_.isOpen() || verdict.id != transferForm_.checkId()) continue;
+        if (!verdict.error.empty()) {
+            transferForm_.fail(verdict.error);
+            continue;
+        }
+        transferForm_.close();
+        transfers_.start(verdict.job);
+        say((verdict.job.direction == transfer::Direction::Upload ? "sending " : "fetching ") +
+            transfer::describe(verdict.job) + "…");
+    }
+
+    for (const auto& outcome : transfers_.take()) {
+        const bool upload = outcome.job.direction == transfer::Direction::Upload;
+        const std::string what = transfer::describe(outcome.job);
+        if (!outcome.ok) {
+            say(std::string(upload ? "could not send " : "could not fetch ") + what + ": " +
+                    outcome.error,
+                true);
+            continue;
+        }
+
+        const auto seconds =
+            std::chrono::duration_cast<std::chrono::seconds>(outcome.took).count();
+        const std::string where =
+            upload ? outcome.job.conn.name + ":" +
+                         elidePath(outcome.job.destination.empty() ? "~" : outcome.job.destination, 28)
+                   : elidePath(paths::contractUser(outcome.job.destination), 28);
+        say(std::string(upload ? "sent " : "fetched ") + what + " to " + where +
+            (seconds > 0 ? " in " + std::to_string(seconds) + "s" : ""));
+
+        // Show the new arrival if the pane is looking at where it landed.
+        if (upload && browser_.connection() == outcome.job.conn.name) {
+            askRemote(browser_.connection(), browser_.where(), false);
+        } else if (!upload && !browser_.remote()) {
+            browser_.refresh(config_.browser());
+        }
+    }
+    invalidate();
 }
 
 // --- rendering -------------------------------------------------------------
@@ -1366,7 +1665,7 @@ Element App::renderStatusBar(const Layout& layout) {
                    color(toFtx(theme_->fg)));
 
     if (leaderArmed_) {
-        left.push_back(text(" " + config_.general().leader.describe() + "… ") |
+        left.push_back(text(" " + leaderChord_.describe() + "… ") |
                        bgcolor(toFtx(theme_->warning)) | color(toFtx(theme_->bg)) | bold);
     }
 
@@ -1387,6 +1686,21 @@ Element App::renderStatusBar(const Layout& layout) {
             left.push_back(text(" " + std::to_string(elapsed) + "s") | color(toFtx(theme_->muted)));
         }
         left.push_back(text(" "));
+    }
+
+    if (transfers_.running() > 0) {
+        if (const auto job = transfers_.current()) {
+            const auto elapsed =
+                std::chrono::duration_cast<std::chrono::seconds>(transfers_.currentElapsed())
+                    .count();
+            std::string label = "⇅ " + elide(transfer::describe(*job), 24) +
+                                (job->direction == transfer::Direction::Upload
+                                     ? " → " + job->conn.name
+                                     : " ← " + job->conn.name);
+            if (transfers_.running() > 1) label += " +" + std::to_string(transfers_.running() - 1);
+            if (elapsed > 0) label += " " + std::to_string(elapsed) + "s";
+            left.push_back(text(" " + label + " ") | color(toFtx(theme_->accentAlt)));
+        }
     }
 
     if (session && session->scrolled()) {
@@ -1425,6 +1739,7 @@ Element App::renderHints(int room) {
     // Worth showing while you're connected. Just clutter the rest of the time.
     if (const term::Session* session = active(); session && !session->connection().empty()) {
         all.insert(all.begin() + 1, {keyHintFor("disconnect"), "disconnect"});
+        all.insert(all.begin() + 1, {keyHintFor("transfer"), "send ⇅"});
     }
 
     Elements parts;
@@ -1464,16 +1779,25 @@ Element App::renderConfirm(int width, int height) {
     confirmSpots_.clear();
     const int panelWidth = std::clamp(width - 8, 36, 64);
 
+    Elements details;
+    std::istringstream lines(confirm_->detail);
+    for (std::string line; std::getline(lines, line);) {
+        details.push_back(text(" " + (line.rfind("into  ", 0) == 0
+                                          ? "into  " + elidePath(line.substr(6), panelWidth - 9)
+                                          : elide(line, panelWidth - 3))) |
+                          color(toFtx(theme_->muted)));
+    }
+
     Element body = vbox({
         text(""),
         text(" " + elide(confirm_->question, panelWidth - 3)) | color(toFtx(theme_->fg)) | bold,
-        text(" " + elide(confirm_->detail, panelWidth - 3)) | color(toFtx(theme_->muted)),
+        vbox(std::move(details)),
         text(""),
         hbox({
             text(" "),
-            confirmSpots_.track(kConfirmYes, hint("Enter", "quit anyway", *theme_)),
+            confirmSpots_.track(kConfirmYes, hint("Enter", confirm_->yes, *theme_)),
             text("   "),
-            confirmSpots_.track(kConfirmNo, hint("Esc", "stay", *theme_)),
+            confirmSpots_.track(kConfirmNo, hint("Esc", confirm_->no, *theme_)),
             filler(),
         }),
     });
@@ -1492,11 +1816,23 @@ Element App::renderHelp(int width, int height) {
     Elements rows;
     rows.push_back(text(" Keys") | bold | color(toFtx(theme_->accent)));
     rows.push_back(text(""));
+    const KeyChord& leader = config_.general().leader;
     rows.push_back(text(elide("  Apollo's keys hide behind the leader, currently " +
-                                  config_.general().leader.describe() +
-                                  ". Press it, let go, then the key.",
+                                  leader.describe() + ". Press it, let go, then the key.",
                               inner)) |
                    color(toFtx(theme_->muted)));
+    const auto& anywhere = config_.general().leaderAnywhere;
+    if (leader.typesText() || !anywhere.empty()) {
+        const std::string where = leader.typesText()
+                                      ? "  " + leader.describe() +
+                                            " is the leader at an empty prompt and in the browser"
+                                      : "  " + leader.describe() + " is the leader";
+        rows.push_back(text(elide(where + (anywhere.empty() ? "." : "; " +
+                                               KeyChord::describeList(anywhere) +
+                                               " everywhere."),
+                                  inner)) |
+                       color(toFtx(theme_->muted)));
+    }
     rows.push_back(text(elide("  Everything else belongs to whatever is running in the terminal.",
                               inner)) |
                    color(toFtx(theme_->muted)));
@@ -1592,6 +1928,7 @@ Element App::render() {
                                  focus_ == Focus::Terminal, *theme_, decoration, terminalRight);
 
     // --- browser pane ---
+    browser_.setCanSend(browser_.remote() || !config_.connections().empty());
     Element body;
     if (layout.browserWidth == 0) {
         body = std::move(terminalPane);
@@ -1646,7 +1983,7 @@ Element App::render() {
     }
 
     const bool hasOverlay = onboard_.isOpen() || configView_.isOpen() || palette_.isOpen() ||
-                            helpOpen_ || confirm_.has_value();
+                            helpOpen_ || confirm_.has_value() || transferForm_.isOpen();
     if (hasOverlay && decoration.dimInactive) root = dim(std::move(root));
 
     if (confirm_) {
@@ -1654,6 +1991,9 @@ Element App::render() {
     } else if (onboard_.isOpen()) {
         root = dbox({std::move(root),
                      onboard_.render(*theme_, decoration, layout.width, layout.height)});
+    } else if (transferForm_.isOpen()) {
+        root = dbox({std::move(root),
+                     transferForm_.render(*theme_, decoration, layout.width, layout.height)});
     } else if (configView_.isOpen()) {
         root = dbox({std::move(root),
                      configView_.render(*theme_, decoration, layout.width, layout.height)});
@@ -1662,6 +2002,9 @@ Element App::render() {
                      palette_.render(*theme_, decoration, layout.width, layout.height)});
     } else if (helpOpen_) {
         root = dbox({std::move(root), renderHelp(layout.width, layout.height)});
+    } else if (leaderArmed_ &&
+               std::chrono::steady_clock::now() - leaderArmedAt_ >= kLeaderKeysDelay) {
+        root = dbox({std::move(root), renderLeaderKeys(layout.width)});
     }
     return root;
 }
@@ -1693,11 +2036,13 @@ int App::run() {
         controlError = "control socket: " + controlError;
     }
 
+    // Shells set up by an older Apollo get the newer prompt marks.
+    Onboard::refreshShellIntegration();
+
     if (!newTab(connection)) return 1;
     if (connection) say("connecting to " + connection->describe() + "…");
     else if (!controlError.empty()) say(controlError, true);
 
-    if (options_.chooseConnection) pickConnection();
     if (options_.runSetup) onboard_.start();
     if (options_.openConfig) configView_.open();
     if (!options_.command.empty()) tabs_.front()->sendText(options_.command + "\r");

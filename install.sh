@@ -5,6 +5,9 @@
 #   PREFIX=~/.local ./install.sh install somewhere that needs no password
 #   ./install.sh --uninstall     remove it
 #
+# If Apollo has been set up before, it asks whether to run the setup wizard
+# again. The answer defaults to no, so pressing Enter keeps your settings.
+#
 # Needs a C++17 compiler, CMake and git. FTXUI is fetched and built into the
 # binary, so there is no library left behind for a package manager to break.
 
@@ -91,3 +94,23 @@ case ":$PATH:" in
         say "then run: apollo"
         ;;
 esac
+
+# Already set up once? Offer the wizard again, but only if asked for: an
+# upgrade shouldn't walk anyone back through questions they've answered.
+CONFIG_DIR="${APOLLO_CONFIG_DIR:-$HOME/.apollo}"
+if [ -f "$CONFIG_DIR/.setup-complete" ]; then
+    if [ -t 0 ] && [ -t 1 ]; then
+        printf '\n  Apollo is already set up. Run the setup wizard again? [y/N] '
+        read -r answer || answer=""
+        case "$answer" in
+            [yY]|[yY][eE][sS])
+                "$PREFIX/bin/apollo" setup || true
+                ;;
+            *)
+                say "kept your settings; \`apollo setup\` runs the wizard any time"
+                ;;
+        esac
+    fi
+else
+    say "the first run walks you through setup"
+fi

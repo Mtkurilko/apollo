@@ -90,6 +90,10 @@ public:
     Selection selection;
     std::string selectedText() const;
 
+    // Nothing typed at the shell's prompt, and nothing else in charge of the
+    // keyboard. That's when a Space leader can't be mistaken for a space.
+    bool atEmptyPrompt() const;
+
     // How long the current command has run, if the shell marks it (OSC 133).
     std::chrono::steady_clock::duration commandElapsed() const;
     bool commandRunning() const { return screen_.commandRunning; }
@@ -115,6 +119,13 @@ private:
     std::mutex readerLock_;
     std::condition_variable readerWake_;
     bool announced_ = false;
+
+    // What we have sent the shell since its last prompt. Tracked from our side
+    // because only the shell knows its line, and it doesn't say.
+    enum class Line { Empty, Typed, Submitted };
+    void noteInput(Line state);
+    Line line_ = Line::Empty;
+    std::uint64_t promptsAtSubmit_ = 0;
 
     int scrollOffset_ = 0;
     bool started_ = false;

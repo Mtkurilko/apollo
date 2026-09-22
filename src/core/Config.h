@@ -19,13 +19,16 @@ struct GeneralSettings {
     std::string workspace = "~";
     std::string shell;  // empty: the user's login shell
     std::string editor; // empty: $EDITOR, then $VISUAL, then the system opener
-    std::string defaultConnection;
     bool followCwd = true;   // the browser tracks the shell's directory
     bool confirmQuit = false;
     // Tab opened for a connection goes away with it instead of turning back
     // into a local shell.
     bool disconnectClosesTab = true;
-    KeyChord leader{ModCtrl, "space"};
+    // Space works at an empty prompt and in the browser.
+    KeyChord leader{ModNone, "space"};
+    // Also the leader, everywhere: inside vim, mid-command. Two by default,
+    // since some systems keep Ctrl+Space for switching input languages.
+    std::vector<KeyChord> leaderAnywhere{{ModCtrl, "space"}, {ModCtrl, "\\"}};
 };
 
 struct DecorationSettings {
@@ -134,7 +137,6 @@ public:
     bool unset(const std::string& path);
     bool addConnection(const Connection& conn, std::string* error = nullptr);
     bool removeConnection(const std::string& name);
-    bool setDefaultConnection(const std::string& name, std::string* error = nullptr);
     bool addBind(const std::string& spec, std::string* error = nullptr);
     bool removeBind(const std::string& spec);
     bool addCommand(const std::string& name, const std::string& exec,

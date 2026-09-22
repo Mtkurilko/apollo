@@ -157,6 +157,9 @@ public:
     bool bellPending = false;
     // OSC 133 C and D. The shell telling us a command started/finished.
     bool commandRunning = false;
+    // Counts OSC 133 A marks. Zero means the shell has no integration, and a
+    // change means a fresh prompt came up.
+    std::uint64_t promptsSeen = 0;
     // Bumped whenever something visible changes. Lets the UI skip redraws.
     std::uint64_t revision() const { return revision_; }
 

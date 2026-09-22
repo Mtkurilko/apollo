@@ -38,6 +38,10 @@ Invocation interactive(const Connection& conn);
 
 Invocation command(const Connection& conn, const std::string& remote);
 
+// scp with the shared master. `args` are scp's own flags, then the paths.
+// `batch` never prompts: for callers that don't own a terminal to prompt on.
+Invocation copy(const Connection& conn, const std::vector<std::string>& args, bool batch);
+
 void closeMaster(const Connection& conn);
 
 // Escapes one argument for the remote /bin/sh, which only sees a string.

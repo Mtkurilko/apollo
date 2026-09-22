@@ -485,7 +485,10 @@ void ConfigFile::set(const std::string& path, const std::string& value) {
             const std::size_t comment = commentStart(line);
             std::string tail;
             if (comment != std::string::npos && comment > valueStart) {
-                tail = "  " + trim(line.substr(comment));
+                // Keep the comment in its column while the new value leaves room.
+                const std::size_t end = valueStart + value.size();
+                const std::size_t gap = comment >= end + 2 ? comment - end : 2;
+                tail = std::string(gap, ' ') + trim(line.substr(comment));
             }
             line = line.substr(0, valueStart) + value + tail;
             reparse();

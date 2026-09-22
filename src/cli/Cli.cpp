@@ -12,6 +12,7 @@
 #include "core/Control.h"
 #include "core/Paths.h"
 #include "core/Process.h"
+#include "net/Transfer.h"
 
 namespace fs = std::filesystem;
 
@@ -46,7 +47,6 @@ int configUsage() {
                  "  apollo config connections\n"
                  "  apollo config add <name> <user>@<host> [port]\n"
                  "  apollo config remove <name>\n"
-                 "  apollo config default [<name>]\n"
                  "\n"
                  "Keys and commands:\n"
                  "  apollo config bind <mods>, <key>, <action> [, <arg>]\n"
@@ -79,7 +79,6 @@ int listSettings(const Config& config) {
             std::cout << "  " << std::left << std::setw(26) << conn.name << conn.describe();
             if (!conn.keyPath.empty()) std::cout << "  key " << conn.keyPath;
             else if (!conn.password.empty()) std::cout << "  password ********";
-            if (conn.name == config.general().defaultConnection) std::cout << "  (default)";
             std::cout << "\n";
         }
     }
@@ -103,18 +102,15 @@ int listConnections(const Config& config) {
         if (!conn.keyPath.empty()) std::cout << "key";
         else if (!conn.password.empty()) std::cout << "password";
         else std::cout << "no credentials";
-        if (conn.name == config.general().defaultConnection) std::cout << "  (default)";
         std::cout << "\n";
     }
 
     if (connections.size() == 1) {
         std::cout << "\n`apollo connect` uses " << connections.front().name
                   << " with no argument.\n";
-    } else if (config.general().defaultConnection.empty()) {
+    } else {
         std::cout << "\nSeveral destinations, so name one: apollo connect "
-                  << connections.front().name << "\n"
-                  << "Or pick a default: apollo config default " << connections.front().name
-                  << "\n";
+                  << connections.front().name << "\n";
     }
     return 0;
 }
@@ -271,20 +267,9 @@ int runConfig(std::vector<std::string> args, Config& config, Outcome& outcome) {
     }
 
     if (sub == "default") {
-        if (args.empty()) {
-            const std::string current = config.general().defaultConnection;
-            std::cout << (current.empty() ? "(no default set)" : current) << "\n";
-            return 0;
-        }
-        std::string error;
-        if (!config.setDefaultConnection(args[0], &error)) {
-            std::cerr << error << "\n";
-            return 1;
-        }
-        if (!config.save(&error)) { std::cerr << error << "\n"; return 1; }
-        if (args[0].empty()) std::cout << "Cleared the default destination.\n";
-        else std::cout << "Default destination is now " << args[0] << "\n";
-        return 0;
+        std::cerr << "Apollo no longer picks a default destination. With one configured it\n"
+                     "is used; with several, name the one you want: apollo connect <name>\n";
+        return 1;
     }
 
     if (sub == "bind") {
@@ -342,6 +327,128 @@ int listCommands(const Config& config) {
     return 0;
 }
 
+// --- copying files to and from a connection --------------------------------
+
+int transferUsage() {
+    std::cout << "Copy files to and from an SSH destination, over the connection Apollo\n"
+                 "already has open when there is one.\n\n"
+                 "  apollo push <file>... [<name>:<dir>]    send files there\n"
+                 "  apollo pull [<name>:]<path>... [<dir>]  fetch files from there\n\n"
+                 "<name>: can be left off when only one destination is configured; with\n"
+                 "several it's required. push lands in the destination's remote_dir (or\n"
+                 "home) unless given a directory, pull in the current directory.\n"
+                 "Directories are copied whole.\n\n"
+                 "  apollo push build/app.tar.gz lab:/srv/releases\n"
+                 "  apollo pull lab:logs/app.log lab:logs/err.log ~/Desktop\n";
+    return 0;
+}
+
+int runTransfer(const std::string& verb, std::vector<std::string> args, const Config& config) {
+    const bool upload = verb == "push" || verb == "upload";
+    if (args.empty() || args[0] == "--help" || args[0] == "-h") {
+        transferUsage();
+        return args.empty() ? 1 : 0;
+    }
+
+    const auto isConnection = [&](const std::string& name) {
+        return config.connection(name) != nullptr;
+    };
+    const auto named = [&](const std::string& text) {
+        return !transfer::parseTarget(text, isConnection).connection.empty();
+    };
+
+    transfer::Job job;
+    job.direction = upload ? transfer::Direction::Upload : transfer::Direction::Download;
+    std::string connection;
+    bool destinationGiven = false;
+
+    if (upload) {
+        if (args.size() > 1 && named(args.back())) {
+            const auto target = transfer::parseTarget(args.back(), isConnection);
+            connection = target.connection;
+            job.destination = target.path;
+            destinationGiven = true;
+            args.pop_back();
+        }
+        for (const auto& source : args) {
+            if (named(source)) {
+                std::cerr << source << " is on the other machine. Fetch it with:\n"
+                          << "  apollo pull " << source << "\n";
+                return 1;
+            }
+            std::error_code ec;
+            if (!fs::exists(paths::expandUser(source), ec)) {
+                std::cerr << "No such file: " << source << "\n";
+                return 1;
+            }
+            job.sources.push_back(paths::expandUser(source));
+        }
+    } else {
+        // A last argument that isn't on the remote is where things land, as
+        // long as it's clearly a place: a directory, or after named sources.
+        job.destination = ".";
+        if (args.size() > 1 && !named(args.back())) {
+            std::error_code ec;
+            const bool earlierNamed = std::any_of(args.begin(), args.end() - 1, named);
+            if (earlierNamed || fs::is_directory(paths::expandUser(args.back()), ec)) {
+                job.destination = paths::expandUser(args.back());
+                args.pop_back();
+            }
+        }
+        for (const auto& source : args) {
+            const auto target = transfer::parseTarget(source, isConnection);
+            if (!target.connection.empty()) {
+                if (!connection.empty() && connection != target.connection) {
+                    std::cerr << "One machine at a time: " << connection << " and "
+                              << target.connection << " in the same pull.\n";
+                    return 1;
+                }
+                connection = target.connection;
+            }
+            job.sources.push_back(target.path);
+        }
+        std::error_code ec;
+        if (job.sources.size() > 1 && !fs::is_directory(job.destination, ec)) {
+            std::cerr << "Several files need a directory to land in: " << job.destination << "\n";
+            return 1;
+        }
+    }
+
+    std::string error;
+    const auto conn = config.resolveConnection(connection, error);
+    if (!conn) {
+        if (connection.empty() && config.connections().size() > 1) {
+            std::string names;
+            for (const auto& c : config.connections()) names += (names.empty() ? "" : ", ") + c.name;
+            const std::string example = config.connections().front().name;
+            std::cerr << "Several destinations are configured, so name the one you want:\n"
+                      << (upload ? "  apollo push <file>... " + example + ":<dir>\n"
+                                 : "  apollo pull " + example + ":<path>...\n")
+                      << "Configured: " << names << "\n";
+        } else {
+            std::cerr << error << "\n";
+        }
+        return 1;
+    }
+    job.conn = *conn;
+    if (upload && !destinationGiven) job.destination = conn->remoteDir;
+
+    std::cout << (upload ? "Sending " : "Fetching ") << transfer::describe(job) << " "
+              << (upload ? "to " : "from " + conn->name + " to ")
+              << (upload ? transfer::describeDestination(job)
+                         : paths::contractUser(job.destination))
+              << std::endl; // before scp starts writing to the same terminal
+
+    const ssh::Invocation call = transfer::command(job, false, false);
+    const int code = process::runAttached(call.argv, call.env);
+    if (code == 127) {
+        std::cerr << "Could not run " << call.argv.front()
+                  << (conn->usesPassword() ? " (a password connection needs sshpass)" : "")
+                  << "\n";
+    }
+    return code;
+}
+
 // --- talking to the Apollo we are already inside --------------------------- Without this,
 // `apollo` typed inside Apollo would otherwise nest a second one in the first.
 
@@ -389,8 +496,9 @@ std::vector<std::string> completionsFor(const std::vector<std::string>& words,
     const std::size_t at = words.size();
 
     if (at <= 2) {
-        std::vector<std::string> out = {"connect", "disconnect", "config",  "setup", "doctor",
-                                        "commands", "completions", "--help", "--version"};
+        std::vector<std::string> out = {"connect",  "disconnect", "push",        "pull",
+                                        "config",   "setup",      "doctor",      "commands",
+                                        "completions", "--help",  "--version"};
         for (const auto& name : commandNames()) out.push_back(name);
         return out;
     }
@@ -398,6 +506,13 @@ std::vector<std::string> completionsFor(const std::vector<std::string>& words,
     const std::string& command = words[1];
 
     if (command == "connect") return at == 3 ? connectionNames() : std::vector<std::string>{};
+    if (command == "push" || command == "pull") {
+        // Offer `name:` for the remote side; the shell's own file completion
+        // takes over for local paths when nothing here fits.
+        std::vector<std::string> out;
+        for (const auto& name : connectionNames()) out.push_back(name + ":");
+        return out;
+    }
     if (command == "completions") {
         return at == 3 ? std::vector<std::string>{"zsh", "bash"} : std::vector<std::string>{};
     }
@@ -406,7 +521,7 @@ std::vector<std::string> completionsFor(const std::vector<std::string>& words,
 
     if (at == 3) {
         return {"list",  "get",     "set",    "unset",  "path",   "edit",
-                "check", "add",     "remove", "default", "bind",  "unbind",
+                "check", "add",     "remove", "bind",   "unbind",
                 "binds", "actions", "connections"};
     }
 
@@ -424,7 +539,7 @@ std::vector<std::string> completionsFor(const std::vector<std::string>& words,
             }
             return keys;
         }
-        if (sub == "remove" || sub == "default") return connectionNames();
+        if (sub == "remove") return connectionNames();
         if (sub == "bind" || sub == "unbind") {
             std::vector<std::string> actions;
             for (const auto& action : knownActions()) actions.push_back(action.name);
@@ -455,7 +570,13 @@ int printCompletionScript(const std::string& shell) {
 _apollo() {
     local -a candidates
     candidates=(${(f)"$(apollo __complete ${words[1,CURRENT]} 2>/dev/null)"})
-    compadd -a candidates
+    if (( CURRENT > 2 )) && [[ ${words[2]} == (push|pull) ]]; then
+        # `name:` runs straight into a path, and local paths are files.
+        compadd -S '' -a candidates
+        _files
+    else
+        compadd -a candidates
+    fi
 }
 compdef _apollo apollo
 )APOLLO";
@@ -471,7 +592,7 @@ _apollo() {
     candidates="$(apollo __complete "${COMP_WORDS[@]:0:$((COMP_CWORD + 1))}" 2>/dev/null)"
     COMPREPLY=($(compgen -W "${candidates}" -- "${COMP_WORDS[COMP_CWORD]}"))
 }
-complete -F _apollo apollo
+complete -o default -F _apollo apollo
 )APOLLO";
         return 0;
     }
@@ -487,6 +608,8 @@ void printUsage() {
                  "  apollo                      open Apollo here\n"
                  "  apollo <directory>          open Apollo there\n"
                  "  apollo connect [name]       open it connected over SSH\n"
+                 "  apollo push <file>... [name:dir]    copy files to a destination\n"
+                 "  apollo pull [name:]<path>... [dir]  copy files from one\n"
                  "  apollo config               settings, in an editor\n"
                  "  apollo config <subcommand>  settings, from the shell\n"
                  "  apollo setup                run the first-run wizard again\n"
@@ -597,29 +720,21 @@ Outcome dispatch(const std::vector<std::string>& args, Config& config) {
         outcome.code = listCommands(config);
         return outcome;
     }
+    if (first == "push" || first == "pull" || first == "upload" || first == "download") {
+        outcome.code = runTransfer(first, rest, config);
+        return outcome;
+    }
     if (first == "connect") {
-        outcome.launch = true;
-        outcome.options.connect = rest.empty() ? " " : rest[0];
-        // A space means "resolve it for me". Empty would mean "no connection".
-        if (outcome.options.connect == " ") outcome.options.connect.clear();
-
+        // With several destinations the name is required; one is unambiguous.
         std::string error;
-        if (!config.resolveConnection(rest.empty() ? "" : rest[0], error)) {
-            // Nothing named and several to pick from. Open the window and let
-            // it ask instead of dumping a list into the shell.
-            if (rest.empty() && config.connections().size() > 1) {
-                outcome.options.connect.clear();
-                outcome.options.chooseConnection = true;
-                return outcome;
-            }
+        const auto conn = config.resolveConnection(rest.empty() ? "" : rest[0], error);
+        if (!conn) {
             std::cerr << error << "\n";
-            outcome.launch = false;
             outcome.code = 1;
-        } else if (!rest.empty()) {
-            outcome.options.connect = rest[0];
-        } else {
-            outcome.options.connect = config.resolveConnection("", error)->name;
+            return outcome;
         }
+        outcome.launch = true;
+        outcome.options.connect = conn->name;
         return outcome;
     }
 

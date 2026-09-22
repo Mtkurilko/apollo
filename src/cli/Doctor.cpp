@@ -104,12 +104,22 @@ int doctor(Config& config) {
            paths::contractUser(paths::commandsDir()) + ")");
     }
 
+    if (config.file().get("general.default_connection")) {
+        warn("general.default_connection is no longer used: with several destinations "
+             "you name the one you want",
+             "apollo config unset general.default_connection");
+    }
+
     // --- connections ---
     const auto& connections = config.connections();
     if (connections.empty()) {
         ok("no SSH destinations configured (local only)");
     } else {
         if (!process::which("ssh")) bad("ssh is not on PATH");
+        if (!process::which("scp")) {
+            bad("scp is not on PATH, so files can't be copied to or from a connection",
+                "it ships with OpenSSH, alongside ssh");
+        }
 
         bool needsSshpass = false;
         for (const auto& conn : connections) {
@@ -139,9 +149,9 @@ int doctor(Config& config) {
                 "brew install sshpass — or switch that connection to a key");
         }
 
-        if (connections.size() > 1 && config.general().defaultConnection.empty()) {
-            warn("several destinations and no default; `apollo connect` will ask for a name",
-                 "apollo config default " + connections.front().name);
+        if (connections.size() > 1) {
+            ok(std::to_string(connections.size()) +
+               " destinations; connect and transfers take a name");
         }
     }
 
