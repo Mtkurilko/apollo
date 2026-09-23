@@ -14,7 +14,8 @@ namespace {
 std::string prettyLabel(const std::string& path) {
     static const std::map<std::string, std::string> overrides = {
         {"general.follow_cwd", "Follow the shell"},
-        {"general.default_connection", "Default destination"},
+        {"general.leader", "Leader key"},
+        {"general.leader_anywhere", "Leader anywhere"},
         {"decoration.dim_inactive", "Dim inactive pane"},
         {"terminal.osc52_clipboard", "Clipboard writes (OSC 52)"},
         {"terminal.shell_integration", "Shell integration"},
@@ -40,6 +41,7 @@ void ConfigView::open() {
     row_ = 0;
     scroll_ = 0;
     editing_ = false;
+    capturingLeader_ = false;
     prompting_ = false;
     error_.clear();
     flash_.clear();
@@ -138,6 +140,12 @@ void ConfigView::beginEdit() {
     if (row_ < 0 || row_ >= static_cast<int>(settings.size())) return;
 
     const Config::Setting& setting = *settings[static_cast<std::size_t>(row_)];
+    if (setting.path == "general.leader") {
+        // Quicker to press the key than to spell it.
+        capturingLeader_ = true;
+        error_.clear();
+        return;
+    }
     if (setting.type == Config::Setting::Type::Bool) { toggleBool(); return; }
     if (setting.type == Config::Setting::Type::Enum) { cycleChoice(1); return; }
 
@@ -370,6 +378,18 @@ bool ConfigView::onKey(const KeyChord& chord, const std::string& raw) {
         return true;
     }
 
+    if (capturingLeader_) {
+        capturingLeader_ = false;
+        if (chord.key == "escape" && chord.mods == ModNone) return true;
+        if (chord.empty()) { error_ = "that key can't be the leader"; return true; }
+        std::string spec = chord.spec();
+        std::transform(spec.begin(), spec.end(), spec.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        applyChange("general.leader", spec);
+        if (error_.empty()) flash_ = "leader is now " + chord.describe();
+        return true;
+    }
+
     if (editing_) {
         if (chord.key == "escape") { cancelEdit(); return true; }
         if (chord.key == "enter") { commitEdit(); return true; }
@@ -442,6 +462,7 @@ bool ConfigView::onMouse(const Mouse& mouse) {
     }
     if (mouse.button != Mouse::Left || mouse.motion != Mouse::Pressed) return true;
 
+    capturingLeader_ = false; // a click means you've stopped looking for a key
     const int hit = spots_.at(mouse.x, mouse.y);
     if (hit < 0) return true;
 
@@ -508,6 +529,19 @@ Element ConfigView::renderSettings(Page page, const Theme& theme, int width, int
         Element value;
         if (isSelected && editing_ && editingPath_ == setting.path) {
             value = editor_.render(theme, setting.defaultValue, true);
+        } else if (setting.path == "general.leader") {
+            if (isSelected && capturingLeader_) {
+                value = text("press the new leader…  Esc keeps this one") |
+                        color(toFtx(theme.warning));
+            } else {
+                const auto chord = KeyChord::parse(current);
+                value = hbox({
+                    text(chord ? chord->describe() : current) | color(toFtx(theme.fg)),
+                    text(chord && chord->typesText() ? "   at an empty prompt and in the browser"
+                                                     : "") |
+                        color(toFtx(theme.muted)),
+                });
+            }
         } else if (setting.type == Config::Setting::Type::Bool) {
             const bool on = ConfigFile::asBool(current, false);
             value = hbox({
@@ -545,7 +579,9 @@ Element ConfigView::renderSettings(Page page, const Theme& theme, int width, int
     if (row_ >= 0 && row_ < static_cast<int>(settings.size())) {
         const Config::Setting& setting = *settings[static_cast<std::size_t>(row_)];
         std::string detail = setting.summary;
-        if (setting.type == Config::Setting::Type::Enum) {
+        if (setting.path == "general.leader") {
+            detail += "  —  Enter, then press the key you want";
+        } else if (setting.type == Config::Setting::Type::Enum) {
             const std::vector<std::string> choices = setting.path == "decoration.theme"
                                                          ? Config::availableThemes()
                                                          : setting.choices;
@@ -607,7 +643,8 @@ Element ConfigView::renderKeys(const Theme& theme, int height) {
         separator() | color(toFtx(theme.border)),
         vbox({
             text("Leader is " + config_.general().leader.describe() +
-                 ". Press it, release, then the key.") | color(toFtx(theme.fg)),
+                 ". Press it, release, then the key. Change it on General.") |
+                color(toFtx(theme.fg)),
             text("  d removes a bind. Add your own with `bind = MODS, KEY, action` in the config.") |
                 color(toFtx(theme.muted)),
         }),
@@ -695,7 +732,6 @@ Element ConfigView::renderCommands(const Theme& theme, int height) {
 Element ConfigView::renderConnections(const Theme& theme, int height) {
     const auto& connections = config_.connections();
     const int visible = std::max(3, height - 3);
-    const std::string preferred = config_.general().defaultConnection;
 
     Elements rows;
     for (int i = 0; i < static_cast<int>(connections.size()) && i < visible; ++i) {
@@ -714,7 +750,6 @@ Element ConfigView::renderConnections(const Theme& theme, int height) {
             text(conn.describe()) | color(toFtx(theme.muted)),
             filler(),
             text(auth + " ") | color(authColor),
-            text(conn.name == preferred ? "default " : "        ") | color(toFtx(theme.accentAlt)),
         });
         if (i == row_) row = std::move(row) | bgcolor(toFtx(theme.selection));
         rows.push_back(spots_.track(kRowBase + i, std::move(row)));
@@ -725,12 +760,11 @@ Element ConfigView::renderConnections(const Theme& theme, int height) {
     }
     while (static_cast<int>(rows.size()) < visible) rows.push_back(text(""));
 
-    std::string rule = "One destination: `apollo connect` uses it with no argument.";
+    std::string rule = "One destination: connect and transfers use it without a name.";
     if (connections.size() > 1) {
-        rule = preferred.empty()
-                   ? "Several destinations: name one — `apollo connect " +
-                         connections.front().name + "` — or set a default."
-                   : "Several destinations: a bare `apollo connect` uses '" + preferred + "'.";
+        rule = "Several destinations: always name one — `apollo connect " +
+               connections.front().name + "`, `apollo push f " + connections.front().name +
+               ":dir`.";
     }
 
     return vbox({
@@ -855,8 +889,8 @@ Element ConfigView::render(const Theme& theme, const DecorationSettings& decorat
         footer.push_back(spots_.track(kClose, hint("Esc", "close", theme)));
     }
     footer.push_back(filler());
-    if (!error_.empty()) footer.push_back(text(error_ + " ") | color(toFtx(theme.error)));
-    else if (!flash_.empty()) footer.push_back(text(flash_ + " ") | color(toFtx(theme.success)));
+    if (!error_.empty()) footer.push_back(text("  " + error_ + " ") | color(toFtx(theme.error)));
+    else if (!flash_.empty()) footer.push_back(text("  " + flash_ + " ") | color(toFtx(theme.success)));
 
     Element content = vbox({
         hbox({

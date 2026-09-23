@@ -118,6 +118,7 @@ void Screen::resetTabStops() {
 
 void Screen::markPrompt() {
     currentRow().promptStart = true;
+    ++promptsSeen;
     touch();
 }
 

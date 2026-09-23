@@ -154,7 +154,7 @@ bool LineEdit::onKey(const KeyChord& chord, const std::string& raw) {
 }
 
 Element LineEdit::render(const Theme& theme, const std::string& placeholder, bool focused,
-                         bool mask) const {
+                         bool mask, int width) const {
     const std::string shown = mask ? std::string(this->text.size(), '*') : this->text;
 
     if (shown.empty()) {
@@ -170,24 +170,43 @@ Element LineEdit::render(const Theme& theme, const std::string& placeholder, boo
     }
 
     const int at = std::clamp(cursor, 0, static_cast<int>(shown.size()));
-    const std::string before = shown.substr(0, static_cast<std::size_t>(at));
-    const std::string after = shown.substr(static_cast<std::size_t>(at));
+    std::string before = shown.substr(0, static_cast<std::size_t>(at));
+    std::string after = shown.substr(static_cast<std::size_t>(at));
+
+    // Too long for its room: scroll so the cursor stays in sight, and mark
+    // whatever is cut off with an ellipsis.
+    if (width > 0 && displayWidth(shown) + 1 > width) {
+        const int keep = std::max(1, width - 2);
+        if (displayWidth(before) > keep) {
+            while (!before.empty() && displayWidth(before) > keep - 1) {
+                std::size_t drop = 1;
+                while (drop < before.size() &&
+                       (static_cast<unsigned char>(before[drop]) & 0xC0) == 0x80) {
+                    ++drop;
+                }
+                before.erase(0, drop);
+            }
+            before = "…" + before;
+        }
+        const int room = std::max(1, width - displayWidth(before) - 1);
+        if (displayWidth(after) > room) after = elide(after, room);
+    }
 
     Elements parts;
     parts.push_back(ftxui::text(before) | color(toFtx(theme.fg)));
     if (focused) {
         // Cursor is a block drawn over whatever character it sits on.
-        std::size_t width = 1;
+        std::size_t bytes = 1;
         if (!after.empty()) {
             const unsigned char lead = static_cast<unsigned char>(after[0]);
-            if ((lead & 0xE0) == 0xC0) width = 2;
-            else if ((lead & 0xF0) == 0xE0) width = 3;
-            else if ((lead & 0xF8) == 0xF0) width = 4;
+            if ((lead & 0xE0) == 0xC0) bytes = 2;
+            else if ((lead & 0xF0) == 0xE0) bytes = 3;
+            else if ((lead & 0xF8) == 0xF0) bytes = 4;
         }
-        const std::string under = after.empty() ? " " : after.substr(0, width);
+        const std::string under = after.empty() ? " " : after.substr(0, bytes);
         parts.push_back(ftxui::text(under) | bgcolor(toFtx(theme.accent)) | color(toFtx(theme.bg)));
-        if (after.size() > width) {
-            parts.push_back(ftxui::text(after.substr(width)) | color(toFtx(theme.fg)));
+        if (after.size() > bytes) {
+            parts.push_back(ftxui::text(after.substr(bytes)) | color(toFtx(theme.fg)));
         }
     } else if (!after.empty()) {
         parts.push_back(ftxui::text(after) | color(toFtx(theme.fg)));

@@ -6,8 +6,11 @@
 #include <ftxui/dom/node.hpp>
 #include <ftxui/screen/screen.hpp>
 
+#include <unistd.h>
+
 #include <algorithm>
 #include <cstdlib>
+#include <functional>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -20,9 +23,12 @@
 #include "core/Keys.h"
 #include "core/Layout.h"
 #include "core/Paths.h"
+#include "core/Process.h"
 #include "core/Theme.h"
 #include "net/RemoteFs.h"
 #include "net/Ssh.h"
+#include "net/Transfer.h"
+#include "term/Session.h"
 #include "ui/Boot.h"
 #include "ui/BrowserView.h"
 #include "ui/Widgets.h"
@@ -241,6 +247,34 @@ void testKeys() {
     expect(KeyChord::parse("", "COMMA")->key, std::string(","), "comma normalizes to the character");
     check(!KeyChord::parse("HYPER", "K").has_value(), "an unknown modifier is rejected");
     check(!KeyChord::parse("CTRL", "wobble").has_value(), "an unknown key is rejected");
+
+    const auto plus = KeyChord::parse("ctrl+space");
+    check(plus && plus->mods == ModCtrl && plus->key == "space", "parses ctrl+space");
+    const auto emacs = KeyChord::parse("C-a");
+    check(emacs && emacs->mods == ModCtrl && emacs->key == "a", "parses C-a");
+    const auto both = KeyChord::parse("Ctrl-Shift-K");
+    check(both && both->mods == (ModCtrl | ModShift) && both->key == "k", "parses Ctrl-Shift-K");
+    const auto bare = KeyChord::parse("space");
+    check(bare && bare->mods == ModNone && bare->key == "space", "parses a bare space");
+    const auto minus = KeyChord::parse("ctrl+-");
+    check(minus && minus->mods == ModCtrl && minus->key == "-", "a separator can be the key");
+    check(KeyChord::parse("-").has_value() && KeyChord::parse("-")->key == "-", "so can a lone one");
+    check(!KeyChord::parse("f-1").has_value(), "a dash that isn't after a modifier stays in the key");
+    expect(KeyChord::parse("ctrl+comma")->spec(), std::string("CTRL+COMMA"), "writes itself back");
+    check(*KeyChord::parse(KeyChord::parse("alt+.")->spec()) == *KeyChord::parse("alt+."),
+          "and what it writes parses to the same chord");
+    check(bare->typesText() && !plus->typesText(), "knows which keys type something");
+
+    const auto list = KeyChord::parseList("ctrl+space, ctrl+backslash");
+    check(list && list->size() == 2 && (*list)[1].key == "\\", "parses a list of keys");
+    const auto spaced = KeyChord::parseList("ctrl+space ctrl+]");
+    check(spaced && spaced->size() == 2, "spaces separate them too");
+    const auto legacy = KeyChord::parseList("CTRL, SPACE");
+    check(legacy && legacy->size() == 1 && legacy->front().key == "space",
+          "one chord in the old spelling is still one chord");
+    expect(KeyChord::describeList(*list), std::string("Ctrl+Space or Ctrl+\\"),
+           "and a list describes itself");
+    expect(decodeKey("\x1c").describe(), std::string("Ctrl+\\"), "decodes Ctrl+\\");
 
     expect(decodeKey("\x01").describe(), std::string("Ctrl+A"), "decodes Ctrl-A");
     expect(decodeKey(std::string(1, '\0')).describe(), std::string("Ctrl+Space"),
@@ -491,8 +525,40 @@ void testConfig() {
     expect(config.decoration().theme, std::string("apollo"), "reads the theme");
     check(config.general().followCwd, "reads a boolean");
     check(!config.binds().empty(), "the default binds are present");
-    check(config.general().leader.mods == ModCtrl && config.general().leader.key == "space",
-          "the leader defaults to Ctrl+Space");
+    check(config.general().leader.mods == ModNone && config.general().leader.key == "space",
+          "the leader defaults to Space");
+    check(Config().general().leader.key == "space", "and so does an empty config");
+
+    Config legacyLeader;
+    legacyLeader.loadText("leader = CTRL, A\n");
+    check(legacyLeader.general().leader.mods == ModCtrl && legacyLeader.general().leader.key == "a",
+          "a top-level leader line from before still counts");
+    expect(legacyLeader.valueOf(*Config::setting("general.leader")), std::string("CTRL, A"),
+           "and reads back as general.leader");
+
+    Config newLeader;
+    newLeader.loadText("leader = CTRL, A\ngeneral {\n    leader = ctrl+b\n}\n");
+    expect(newLeader.general().leader.key, std::string("b"), "general.leader wins over the old line");
+
+    check(legacyLeader.set("leader", "space"), "`leader` is a short name for general.leader");
+    check(legacyLeader.general().leader.mods == ModNone, "setting it takes effect");
+    check(!legacyLeader.file().get("leader").has_value(), "and drops the old top-level line");
+    check(!legacyLeader.set("general.leader", "hyper+q"), "a leader that isn't a key is refused");
+
+    const std::vector<KeyChord> anywhere = Config().general().leaderAnywhere;
+    check(anywhere.size() == 2 && anywhere[0] == KeyChord{ModCtrl, "space"} &&
+              anywhere[1] == KeyChord{ModCtrl, "\\"},
+          "Ctrl+Space and Ctrl+\\ are the leader anywhere, out of the box");
+    check(config.general().leaderAnywhere == anywhere, "and the shipped config says the same");
+    Config oneAnywhere;
+    check(oneAnywhere.set("general.leader_anywhere", "ctrl+]"), "leader_anywhere takes one key");
+    check(oneAnywhere.general().leaderAnywhere.size() == 1 &&
+              oneAnywhere.general().leaderAnywhere[0].key == "]",
+          "and replaces the defaults with it");
+    check(oneAnywhere.set("general.leader_anywhere", ""), "or none at all");
+    check(oneAnywhere.general().leaderAnywhere.empty(), "which leaves Space alone");
+    check(!oneAnywhere.set("general.leader_anywhere", "ctrl+space wobble"),
+          "a list with something that isn't a key is refused");
 
     // Unknown settings are reported rather than ignored: a typo in a config
     // file that silently does nothing is the worst kind.
@@ -555,9 +621,10 @@ void testConfig() {
         "general {\n  default_connection = pi\n}\n"
         "connection lab {\n  host = h1\n  user = u\n}\n"
         "connection pi {\n  host = h2\n  user = u\n}\n");
-    check(withDefault.resolveConnection("", error)->name == "pi", "a default is used when set");
-    check(withDefault.resolveConnection("lab", error)->name == "lab",
-          "an explicit name still beats the default");
+    check(!withDefault.resolveConnection("", error).has_value(),
+          "an old default_connection doesn't stand in for a name");
+    check(withDefault.issues().empty(), "and isn't reported as a problem either");
+    check(withDefault.resolveConnection("lab", error)->name == "lab", "a name still resolves");
 
     // Editing.
     Config editable;
@@ -579,8 +646,10 @@ void testConfig() {
     conn.user = "alice";
     check(editable.addConnection(conn), "adds a connection");
     check(editable.connection("lab") != nullptr, "the connection is readable back");
-    expect(editable.general().defaultConnection, std::string("lab"),
-          "the first connection becomes the default");
+    check(!editable.file().get("general.default_connection").has_value(),
+          "adding one doesn't write a default");
+    check(editable.resolveConnection("", error)->name == "lab",
+          "a single destination needs no name");
     check(!editable.addConnection(conn), "will not add the same name twice");
 
     Connection bad;
@@ -591,7 +660,6 @@ void testConfig() {
 
     check(editable.removeConnection("lab"), "removes a connection");
     check(editable.connection("lab") == nullptr, "and it is gone");
-    check(editable.general().defaultConnection.empty(), "the stale default was cleared too");
 
     check(editable.addCommand("deploy", "./deploy.sh", "Ship it"), "adds a command");
     check(!editable.commands().empty(), "the command is readable back");
@@ -629,7 +697,8 @@ void testMigration() {
     Config config;
     config.loadText(*migrated);
     expect(config.general().workspace, std::string("/Users/me/work"), "the workspace carried over");
-    expect(config.general().defaultConnection, std::string("lab"), "the default carried over");
+    check(!config.file().get("general.default_connection").has_value(),
+          "the old default isn't carried over");
     check(config.connection("lab") != nullptr, "the connection carried over");
     expect(config.connection("lab")->port, 2222, "including its port");
     check(config.issues().empty(), "and the result is a clean config");
@@ -848,6 +917,33 @@ void testBrowser() {
     settings.showHidden = false;
     browser.refresh(settings);
 
+    // Every toolbar button is clicked where it was drawn. The two are worked
+    // out separately, so this is the place they could drift apart.
+    {
+        const Theme theme = *Theme::builtin("apollo");
+        browser.setCanSend(true);
+        for (const int width : {30, 40, 52}) {
+            auto screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(width),
+                                                ftxui::Dimension::Fixed(12));
+            ftxui::Render(screen, browser.render(theme, settings, true, 12, width));
+            int send = -1, sort = -1, filter = -1;
+            for (int x = 0; x < width; ++x) {
+                const std::string& c = screen.PixelAt(x, 0).character;
+                if (c == "⇅") send = x;
+                if (x > 9 && (c == "↓" || c == "↑")) sort = x; // the sort chip, not the up button
+                if (c == "/") filter = x;
+            }
+            const std::string at = " at width " + std::to_string(width);
+            check(send >= 0 && browser.hitTest(0, send, settings) == ui::BrowserView::Hit::Send,
+                  "the send button is where it's drawn" + at);
+            check(sort < 0 || browser.hitTest(0, sort, settings) == ui::BrowserView::Hit::Sort,
+                  "so is the sort chip" + at);
+            check(filter >= 0 && browser.hitTest(0, filter, settings) == ui::BrowserView::Hit::Filter,
+                  "and the filter" + at);
+        }
+        browser.setCanSend(false);
+    }
+
     // Directories first, then names, case-insensitively.
     check(browser.selected() && browser.selected()->name == "alpha", "directories come first");
     browser.moveSelection(1);
@@ -1044,8 +1140,17 @@ void testRemoteQuoting() {
 
     // Quoting the tilde is what made `cd` look for a directory called "~".
     check(quoteRemotePath("~") == "~", "a bare tilde is left for the remote shell");
-    check(quoteRemotePath("~/work") == "~'/work'", "and so is the tilde in front of a path");
-    check(quoteRemotePath("~alice/src") == "~alice'/src'", "including ~user");
+    check(quoteRemotePath("~/work") == "~/'work'", "and so is the tilde in front of a path");
+    check(quoteRemotePath("~alice/src") == "~alice/'src'", "including ~user");
+    check(quoteRemotePath("~/") == "~/", "a tilde and a slash is home");
+    // sh, bash and dash only expand a tilde whose slash isn't quoted.
+    for (const char* shell : {"/bin/sh", "/bin/bash"}) {
+        const auto result = process::run(
+            {shell, "-c", "echo " + quoteRemotePath("~/a dir")}, std::chrono::seconds(5), "",
+            {"HOME=/home/test"});
+        expect(result.out, std::string("/home/test/a dir\n"),
+               std::string("and ") + shell + " expands it");
+    }
     check(quoteRemotePath("/srv/app") == "'/srv/app'", "an absolute path is quoted whole");
     check(quoteRemotePath("/tmp/it's here") == "'/tmp/it'\\''s here'",
           "and a quote in one is escaped");
@@ -1053,6 +1158,169 @@ void testRemoteQuoting() {
               quoteRemotePath("~$(id)/x")[0] == '\'',
           "anything else after the tilde is quoted rather than run");
     check(quoteRemotePath("") == "''", "and nothing becomes an empty argument");
+}
+
+
+// --- transfers -------------------------------------------------------------
+
+void testTransfer() {
+    section("transfers");
+
+    Connection lab;
+    lab.name = "lab";
+    lab.user = "alice";
+    lab.host = "10.0.0.5";
+
+    expect(transfer::remoteSpec(lab, "/srv/app"), std::string("alice@10.0.0.5:/srv/app"),
+           "an absolute remote path");
+    expect(transfer::remoteSpec(lab, "~"), std::string("alice@10.0.0.5:"), "~ is home, bare");
+    expect(transfer::remoteSpec(lab, ""), std::string("alice@10.0.0.5:"), "so is nothing");
+    expect(transfer::remoteSpec(lab, "~/logs"), std::string("alice@10.0.0.5:logs"),
+           "home-relative paths lose the ~");
+
+    Connection six = lab;
+    six.host = "fe80::1";
+    expect(transfer::remoteSpec(six, "x"), std::string("alice@[fe80::1]:x"),
+           "an IPv6 host is bracketed");
+
+    const auto known = [](const std::string& name) { return name == "lab"; };
+    const auto target = transfer::parseTarget("lab:~/work", known);
+    check(target.connection == "lab" && target.path == "~/work", "reads name:path");
+    check(transfer::parseTarget("other:x", known).connection.empty(),
+          "an unknown name is a local path with a colon in it");
+    check(transfer::parseTarget("notes.txt", known).connection.empty(), "a plain local path");
+
+    lab.port = 2222;
+    lab.keyPath = "/k";
+    transfer::Job up{lab, transfer::Direction::Upload, {"/tmp/a.txt"}, "/srv"};
+    const auto call = transfer::command(up, true, true);
+    expect(call.argv.front(), std::string("scp"), "runs scp");
+    const auto has = [&](const std::string& arg) {
+        return std::find(call.argv.begin(), call.argv.end(), arg) != call.argv.end();
+    };
+    check(has("-P") && has("2222") && !has("-p2222"), "scp's port flag is -P");
+    check(has("-r") && has("-q"), "recursive, and quiet when asked");
+    check(has("BatchMode=yes"), "never prompts from inside the window");
+    check(std::any_of(call.argv.begin(), call.argv.end(),
+                      [](const std::string& a) { return a.rfind("ControlPath=", 0) == 0; }),
+          "rides the shared ssh master");
+    expect(call.argv.back(), std::string("alice@10.0.0.5:/srv"), "uploads to the remote side");
+    expect(call.argv[call.argv.size() - 2], std::string("/tmp/a.txt"), "from the local file");
+
+    transfer::Job down{lab, transfer::Direction::Download, {"/var/log/x.log"}, "/tmp"};
+    const auto fetch = transfer::command(down, false, false);
+    expect(fetch.argv.back(), std::string("/tmp"), "downloads into a local directory");
+    expect(fetch.argv[fetch.argv.size() - 2], std::string("alice@10.0.0.5:/var/log/x.log"),
+           "from the remote file");
+    check(std::find(fetch.argv.begin(), fetch.argv.end(), "-q") == fetch.argv.end(),
+          "keeps the progress meter otherwise");
+
+    Connection secret = lab;
+    secret.keyPath.clear();
+    secret.password = "pw";
+    const auto viaSshpass = transfer::command({secret, transfer::Direction::Upload, {"/a"}, ""},
+                                              true, true);
+    expect(viaSshpass.argv.front(), std::string("sshpass"), "a password goes through sshpass");
+    check(std::find(viaSshpass.env.begin(), viaSshpass.env.end(), "SSHPASS=pw") !=
+              viaSshpass.env.end(),
+          "in the environment, not argv");
+
+    expect(transfer::describe(up), std::string("a.txt"), "names a single file");
+    transfer::Job many{lab, transfer::Direction::Upload, {"/a", "/b", "/c"}, ""};
+    expect(transfer::describe(many), std::string("3 files"), "counts several");
+    expect(transfer::describeDestination(many), std::string("lab:~"), "home, when no directory");
+
+    // --- checking before anything moves ---
+    const auto root = std::filesystem::temp_directory_path() / "apollo-test-transfer";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "home" / "work");
+    std::ofstream(root / "home" / "notes.txt") << "hi";
+
+    transfer::Job send{lab, transfer::Direction::Upload, {(root / "home" / "notes.txt").string()}, "~"};
+    check(transfer::checkLocal(send).empty(), "a file that exists can be sent");
+    send.sources = {(root / "nope").string()};
+    check(!transfer::checkLocal(send).empty(), "one that doesn't can't");
+    send.sources = {""};
+    check(!transfer::checkLocal(send).empty(), "nor can nothing");
+
+    transfer::Job get{lab, transfer::Direction::Download, {"/x"}, root.string()};
+    check(transfer::checkLocal(get).empty(), "a download can land in a directory");
+    get.destination = (root / "renamed.txt").string();
+    check(transfer::checkLocal(get).empty(), "or as a new name in one");
+    get.destination = (root / "no" / "such" / "place").string();
+    check(!transfer::checkLocal(get).empty(), "but not somewhere that isn't there");
+
+    // What the other machine says. The script runs here, under the shells a
+    // remote is likely to have, with HOME standing in for the far side's.
+    const auto ask = [&](const transfer::Job& job, const std::string& shell) {
+        const auto result = process::run({shell, "-c", transfer::remoteCheckScript(job)},
+                                         std::chrono::seconds(5), "",
+                                         {"HOME=" + (root / "home").string()});
+        return transfer::readRemoteCheck(job, result.out);
+    };
+    for (const std::string shell : {"/bin/sh", "/bin/bash"}) {
+        transfer::Job up{lab, transfer::Direction::Upload, {(root / "home" / "notes.txt").string()}, "~/work"};
+        check(ask(up, shell).empty(), "an existing remote directory is fine, in " + shell);
+        up.destination = "~/work/new-name.txt";
+        check(ask(up, shell).empty(), "so is a new name inside one");
+        up.destination = "~/missing/deeper";
+        check(!ask(up, shell).empty(), "a directory that isn't there is caught");
+        up.destination = "~/notes.txt";
+        check(ask(up, shell).empty(), "a file can replace a file");
+        up.sources = {(root / "home" / "work").string()};
+        check(!ask(up, shell).empty(), "a directory can't");
+
+        transfer::Job down{lab, transfer::Direction::Download, {"~/notes.txt"}, root.string()};
+        check(ask(down, shell).empty(), "a remote file that exists can be fetched");
+        down.sources = {"~/gone.txt"};
+        check(ask(down, shell).find("gone.txt") != std::string::npos,
+              "one that doesn't is named in the error");
+    }
+    check(!transfer::readRemoteCheck(send, "").empty(), "no answer isn't taken as a yes");
+    std::filesystem::remove_all(root);
+}
+
+// --- the empty prompt a Space leader waits for ------------------------------
+
+void testEmptyPrompt() {
+    section("empty prompt");
+
+    Session session(24, 80, 100);
+    Session::Options options;
+    options.argv = {"/bin/cat"}; // echoes what it's sent, which is all this needs
+    if (!session.start(options)) {
+        check(false, "starts a session");
+        return;
+    }
+    const auto settle = [&](const std::function<bool()>& done) {
+        for (int i = 0; i < 200 && !done(); ++i) {
+            session.pump();
+            ::usleep(5000);
+        }
+        return done();
+    };
+    const std::string mark = "\x1B]133;A\x1B\\";
+
+    check(session.atEmptyPrompt(), "a fresh shell has an empty line");
+    session.sendKey(KeyChord{ModNone, "x"}, "x");
+    check(!session.atEmptyPrompt(), "typing makes it not empty");
+    session.sendKey(KeyChord{ModCtrl, "u"}, "\x15");
+    check(session.atEmptyPrompt(), "Ctrl-U empties it again");
+    session.sendKey(KeyChord{ModNone, "y"}, "y");
+    session.sendKey(KeyChord{ModNone, "enter"}, "\r");
+    check(session.atEmptyPrompt(), "without prompt marks, Enter is trusted");
+
+    session.sendText(mark + "\r");
+    check(settle([&] { return session.screen().promptsSeen > 0; }), "sees a prompt mark");
+    session.sendKey(KeyChord{ModNone, "enter"}, "\r");
+    check(!session.atEmptyPrompt(), "with marks, it waits for the next prompt after Enter");
+    session.sendText(mark + "\r");
+    check(settle([&] { return session.atEmptyPrompt(); }), "and the prompt makes it empty");
+
+    session.sendText("\x1B[?1049h\r");
+    check(settle([&] { return session.screen().alternate(); }) && !session.atEmptyPrompt(),
+          "a full-screen program is never an empty prompt");
+    session.close();
 }
 
 int main() {
@@ -1081,6 +1349,8 @@ int main() {
     testRemoteListing();
     testRemoteQuoting();
     testOpenRules();
+    testTransfer();
+    testEmptyPrompt();
 
     std::filesystem::remove_all(sandbox);
 

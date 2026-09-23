@@ -17,14 +17,14 @@ A file browser and a real terminal side by side, in one configurable window.
 │ ▸ build                                    │ │                                           │
 │ drwxr-xr-x  11:37                          │ │                                           │
 ╰────────────────────────────────────────────╯ ╰───────────────────────────────────────────╯
- local  ~/Apollo/apollo_project              Leader Space commands · F1 keys · Leader , config
+ local  ~/Apollo/apollo_project              Space Space commands · F1 keys · Space , config
 ```
 
 The terminal is a pty with a full escape sequence parser, so `vim`, `htop`,
 `less` and `git add -p` work normally. Apollo adds panes, tabs, a command
-palette, scrollback search and SSH destinations around it. Every key it takes
-is behind a leader key, so Ctrl-A, Ctrl-C, Ctrl-K and Ctrl-R still go to your
-shell.
+palette, scrollback search, SSH destinations and file transfer around it.
+Every key it takes is behind a leader key, Space by default, so Ctrl-A, Ctrl-C,
+Ctrl-K and Ctrl-R still go to your shell.
 
 ## Install
 
@@ -39,11 +39,15 @@ binary, so there is no library to install. To install without sudo:
 PREFIX=~/.local ./install.sh
 ```
 
-Then run `apollo` from anywhere. The first run asks where to open, which theme,
-an optional SSH destination, and whether to install shell integration, then
-writes a commented `~/.apollo/apollo.conf`. All of it can be changed later, and
-`apollo setup` runs it again. A first run that was interrupted is offered
-again next time rather than skipped for good.
+Then run `apollo` from anywhere. The first run asks five short questions —
+where to open, which theme, which leader key, an optional SSH destination, and
+whether to install shell integration — and writes a commented
+`~/.apollo/apollo.conf` as you go. Enter moves on, Shift+Tab goes back, Esc
+keeps what you've answered and skips the rest. The folder field Tab-completes,
+and the SSH step takes `user@host:port` in one line, names the destination for
+you and finds your key. `apollo setup` runs it again, and re-running `./install.sh` over an existing
+setup asks whether to (`[y/N]`: Enter keeps your settings). A first run that
+was interrupted is offered again next time rather than skipped for good.
 
 ## Commands
 
@@ -52,6 +56,8 @@ again next time rather than skipped for good.
 | `apollo` | Open here |
 | `apollo ~/src/thing` | Open there |
 | `apollo connect [name]` | Open connected over SSH |
+| `apollo push <file>... [name:dir]` | Copy files to a destination |
+| `apollo pull [name:]<path>... [dir]` | Copy files from one |
 | `apollo config` | Settings, in an editor |
 | `apollo config <subcommand>` | Settings, from the shell |
 | `apollo setup` | Run the wizard again |
@@ -62,12 +68,44 @@ again next time rather than skipped for good.
 
 ## Keys
 
-Apollo's keys are behind a leader, `Ctrl+Space` by default: press it, let go,
-then press the key. Anything not listed goes to the program in the terminal.
+Apollo's keys are behind a leader: press it, let go, then press the key.
+Anything not listed goes to the program in the terminal.
+
+The leader is **Space**, and it only acts as the leader where a space would do
+nothing:
+
+- in the file browser, unless you're in the middle of typing a name;
+- at an empty shell prompt — nothing typed, no program running, no full-screen
+  app up. Locally Apollo can see what has the terminal; with the shell
+  integration below it also sees each prompt and command, which makes this
+  exact everywhere, over SSH included.
+
+Everywhere else Space types a space, and `Ctrl+Space` or `Ctrl+\` is the
+leader — inside vim, halfway through a command, anywhere. There are two
+because some systems keep Ctrl+Space for switching input languages; where one does,
+`Ctrl+\` is the one that gets through. Pressing either one twice sends it to the
+program, so `Ctrl+\` `Ctrl+\` is still SIGQUIT. If Space turns out not to be
+for Apollo (a key that isn't bound follows it) you get the space and the key,
+so nothing you type is lost. Hold the leader for half a second and a list of
+what can follow it pops up.
+
+Change it with one line, any spelling you like:
+
+```conf
+general {
+    leader          = space        # or ctrl+space, ctrl+a, C-b, alt+space, `
+    leader_anywhere = ctrl+space, ctrl+backslash   # any keys; empty for none
+}
+```
+
+`apollo config set leader ctrl+a` does the same from the shell, and in
+`apollo config` the Leader key row takes a keypress: select it, press Enter,
+press the key you want. A leader that doesn't type anything (Ctrl+A, say) is
+the leader everywhere and nothing more.
 
 | Key | |
 | --- | --- |
-| `Leader Space` | Command palette, fuzzy searched |
+| `Leader Space` | Command palette, fuzzy searched (Space Space, by default) |
 | `Leader ,` | Settings editor |
 | `Leader B` / `E` / `T` | Toggle the browser, focus it, focus the terminal |
 | `Leader C` / `X` / `N` / `O` | New tab, close tab, next, previous |
@@ -78,6 +116,7 @@ then press the key. Anything not listed goes to the program in the terminal.
 | `Leader U` / `[` / `]` | Up a directory, back, forward |
 | `Leader Y` / `V` | Copy the current path, go to the one on the clipboard |
 | `Leader D` | Disconnect: put this tab back on the local machine |
+| `Leader A` | Send the selected file to the other machine |
 | `Shift+PgUp` / `PgDn` | Scroll back |
 | `F1` | Full key reference |
 | `F10` | Quit |
@@ -150,6 +189,7 @@ $accent = #7aa2f7
 
 general {
     workspace    = ~/src
+    leader       = space       # the key in front of Apollo's own
     follow_cwd   = true        # the browser follows your shell
     confirm_quit = true        # ask before leaving mid-command
 }
@@ -173,7 +213,6 @@ browser {
     git_status  = true
 }
 
-leader = CTRL, SPACE
 bind   = LEADER, G, exec, git status
 unbind = LEADER, Q
 
@@ -353,25 +392,83 @@ connection lab {
 }
 ```
 
-How `apollo connect` picks one:
-
-- A name you give always wins: `apollo connect lab`.
-- One destination configured: it is used, no name needed.
-- `general.default_connection`, if it is set.
-- Otherwise Apollo lists them and asks, with the address, port, directory and
-  which credential each one uses.
+With one destination configured, `apollo connect` and file transfers use it
+without being told. With more than one you always say which — `apollo connect
+lab`, `apollo push notes.md lab:` — and a bare `apollo connect` lists the names
+instead of guessing. There is no default to fall back on: connecting to the
+wrong machine, or copying a file onto it, is worse than being asked. (An old
+`general.default_connection` line is ignored; `apollo doctor` points it out.)
+Inside Apollo, the palette's connect and send actions ask you to pick.
 
 `apollo config add` asks for the port and, when you have no key to point at, a
 password. Prefer the key: a password has to go through `sshpass`, and lives in
 `~/.apollo/apollo.conf`, which is written `0600`. Apollo passes it through the
 environment rather than `argv`, so it stays out of `ps`.
 
+### Moving files
+
+Files go across the same ssh master `apollo connect` already holds open, so a
+copy to a machine you're connected to starts without a handshake.
+
+**In the window.** Select a file or directory in the browser and press
+`Leader A`, or click the `⇅` button on the browser's toolbar. The direction
+follows the pane: from a remote directory it's fetched to this machine, from a
+local one it's sent to a destination. With several destinations configured,
+you pick which one first, with the one you were last on at the top.
+
+Then two paths, both editable:
+
+```
+╭──────────────────────────────────────────────────────────╮
+│ Send to lab                            alice@10.0.0.5    │
+├──────────────────────────────────────────────────────────┤
+│ ▸ Local   ~/src/app/build/app.tar.gz                     │
+│           what to send                                   │
+│                                                          │
+│   Remote  ~/work                                         │
+│           a directory on lab, or a new name for it       │
+│                                                          │
+│ Anything there with the same name is replaced.           │
+├──────────────────────────────────────────────────────────┤
+│  Enter  send    Tab  other path    Esc  cancel           │
+╰──────────────────────────────────────────────────────────╯
+```
+
+What you selected fills in what's sent. Where it lands starts as the
+destination's `remote_dir` (or home) for an upload, and the local directory
+the pane was last in for a download. Change either: send something else, or
+land it somewhere else or under a new name.
+
+Enter checks both before anything moves: this machine's side at once, the
+other side over the connection. A path that isn't there says so in the form,
+which stays open to fix it. Once both check out, the copy runs in the
+background with its progress in the status bar, and the pane refreshes when it
+lands.
+
+**From the shell.**
+
+```bash
+apollo push build/app.tar.gz                   # the only destination: its remote_dir
+apollo push notes.md src/ lab:/srv/share       # several, to a named place
+apollo pull lab:logs/app.log                   # into the current directory
+apollo pull lab:logs/a.log lab:logs/b.log ~/Desktop
+```
+
+`name:` picks the destination, and is required when more than one is
+configured. Directories are copied whole, dates are kept, and scp's own
+progress meter shows the way. Shell completion offers `name:` for each
+destination.
+
 ## Shell integration
 
 The wizard offers to add one line to your shell startup file. It sources a
 snippet that emits OSC 7 and OSC 133, the sequences that report the working
-directory and mark where prompts begin. With it, the browser follows every `cd`
-you type, and `Leader ↑` / `Leader ↓` jump between previous commands' output.
+directory and mark where prompts begin and commands start. With it, the browser
+follows every `cd` you type, `Leader ↑` / `Leader ↓` jump between previous
+commands' output, and a Space leader knows for certain when the prompt is empty
+(a REPL waiting for a line never draws a shell prompt, so Space stays a space
+there). Each Apollo refreshes the snippet on start, so a newer one's marks reach
+shells set up by an older one.
 
 It is plain shell, harmless in any other terminal, and removed by deleting the
 line. Nothing else depends on it.
@@ -392,6 +489,7 @@ line. Nothing else depends on it.
 | `src/ui/*` | Panes, palette, settings editor, wizard |
 | `src/net/Ssh` | Destinations, multiplexing, keeping secrets out of `argv` |
 | `src/net/RemoteFs` | Listing directories over an open connection, off the UI thread |
+| `src/net/Transfer` | Copying files across that connection, for `Leader A` and `push`/`pull` |
 
 Reading is split so the screen has one writer and needs no locking: a thread
 waits on the pty and only signals that bytes are ready; the bytes are read and
@@ -406,7 +504,8 @@ cmake -S . -B build && cmake --build build -j8
 
 The tests cover the parts with no screen attached: the config language, key
 decoding, the terminal grid, the escape parser, reflow, connection resolution,
-remote listings and migration.
+remote listings, transfers, the empty-prompt check behind a Space leader, and
+migration.
 
 For the rest, `scripts/drive.py` runs Apollo under a pty of a given size, sends
 keystrokes, and prints what it painted:

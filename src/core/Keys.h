@@ -1,7 +1,8 @@
 // Key chords, as written in the config:
 //
-//     bind = CTRL, K, command_palette
-//     bind = LEADER, B, toggle_browser
+//     bind   = CTRL, K, command_palette
+//     bind   = LEADER, B, toggle_browser
+//     leader = space            # or ctrl+space, C-a, "CTRL, B", ...
 #pragma once
 
 #include <cstdint>
@@ -26,12 +27,24 @@ struct KeyChord {
 
     static std::optional<KeyChord> parse(const std::string& modifiers,
                                          const std::string& key);
+    // One string: "CTRL, SPACE", "ctrl+space", "C-a", "space", "`".
     static std::optional<KeyChord> parse(const std::string& spec);
+    // Several: "ctrl+space, ctrl+backslash" or "ctrl+space ctrl+]". A single
+    // chord in any spelling parse() takes works too. Empty gives none.
+    static std::optional<std::vector<KeyChord>> parseList(const std::string& spec);
+    // "Ctrl+Space or Ctrl+\".
+    static std::string describeList(const std::vector<KeyChord>& chords);
 
     std::string describe() const;
+    // Written back the way the config spells it: "SPACE", "CTRL+A".
+    std::string spec() const;
     bool empty() const { return key.empty(); }
+    // A key that types something on its own, like Space. As the leader it can
+    // only take over where typing it would mean nothing.
+    bool typesText() const { return mods == ModNone && (key == "space" || key.size() == 1); }
 
     bool operator==(const KeyChord& o) const { return mods == o.mods && key == o.key; }
+    bool operator!=(const KeyChord& o) const { return !(*this == o); }
     bool operator<(const KeyChord& o) const {
         return mods != o.mods ? mods < o.mods : key < o.key;
     }

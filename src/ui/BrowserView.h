@@ -31,7 +31,7 @@ public:
         char git = ' '; // M, A, D, ?, or a space
     };
 
-    enum class Hit { None, Back, Forward, Up, Path, Sort, Filter };
+    enum class Hit { None, Back, Forward, Up, Path, Sort, Filter, Send };
 
     void setPath(const std::filesystem::path& path, bool record = true);
     const std::filesystem::path& path() const { return path_; }
@@ -102,6 +102,9 @@ public:
     // Toolbar buttons the app owns rather than the browser.
     std::function<void()> onCopyPath;
     std::function<void()> onCycleSort;
+    // The ⇅ button. Shown only while there's another machine to send to.
+    std::function<void()> onSend;
+    void setCanSend(bool can) { canSend_ = can; }
 
 private:
     void applyFilterAndSort(const BrowserSettings& settings);
@@ -151,6 +154,7 @@ private:
     mutable int lastWidth_ = 34;
 
     Hit hovered_ = Hit::None;
+    bool canSend_ = false;
     bool lastShowHidden_ = false;
     std::string lastSort_;
     bool lastReverse_ = false;

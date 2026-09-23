@@ -156,14 +156,53 @@ bool Session::pump() {
 
 // --- input -----------------------------------------------------------------
 
+void Session::noteInput(Line state) {
+    line_ = state;
+    if (state == Line::Submitted) promptsAtSubmit_ = screen_.promptsSeen;
+}
+
+bool Session::atEmptyPrompt() const {
+    if (!pty_.running() || screen_.alternate() || screen_.commandRunning) return false;
+    // Locally we can see whether anything besides the shell has the terminal.
+    // Over ssh the foreground is always ssh, so this only rules things out.
+    if (pty_.foregroundBusy()) return false;
+
+    switch (line_) {
+        case Line::Empty: return true;
+        case Line::Typed: return false;
+        case Line::Submitted:
+            // With prompt marks, wait for the next prompt: `cat` or a REPL
+            // reading a line never draws one. Without them, trust the Enter.
+            return screen_.promptsSeen == 0 || screen_.promptsSeen != promptsAtSubmit_;
+    }
+    return false;
+}
+
 void Session::sendText(const std::string& text) {
     if (text.empty()) return;
     scrollToBottom();
+    if (text != "\f") {
+        noteInput(text.back() == '\r' || text.back() == '\n' ? Line::Submitted : Line::Typed);
+    }
     pty_.write(text);
 }
 
 void Session::sendKey(const KeyChord& chord, const std::string& raw) {
     scrollToBottom();
+
+    if (chord.key == "enter" && chord.mods == ModNone) {
+        noteInput(Line::Submitted);
+    } else if (chord.mods == ModCtrl && chord.key == "c") {
+        // Throws the line away. With prompt marks, wait to see a prompt, since
+        // a REPL comes back from Ctrl-C too.
+        noteInput(screen_.promptsSeen > 0 ? Line::Submitted : Line::Empty);
+    } else if (chord.mods == ModCtrl && chord.key == "u") {
+        if (line_ == Line::Typed) noteInput(Line::Empty); // killed what was typed
+    } else if (chord.mods == ModCtrl && chord.key == "l") {
+        // Redraws the screen and leaves the line as it was.
+    } else {
+        noteInput(Line::Typed);
+    }
 
     if (screen_.applicationCursor && chord.mods == ModNone) {
         static const std::pair<const char*, char> map[] = {
@@ -184,6 +223,7 @@ void Session::sendKey(const KeyChord& chord, const std::string& raw) {
 void Session::paste(const std::string& text) {
     if (text.empty()) return;
     scrollToBottom();
+    noteInput(Line::Typed);
 
     // Bracketed paste keeps editors from auto-indenting every pasted line.
     if (screen_.bracketedPaste) {

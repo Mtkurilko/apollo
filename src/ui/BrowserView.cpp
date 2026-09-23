@@ -682,7 +682,7 @@ std::vector<BrowserView::Segment> BrowserView::toolbar(const BrowserSettings& se
     const fs::path current(where());
     segments.push_back({Hit::Up, 6, 8, current.parent_path() != current});
 
-    const int sortWidth = static_cast<int>(sortLabel(settings).size()) + 2;
+    const int sortWidth = displayWidth(sortLabel(settings)) + 2;
     int right = width;
     std::vector<Segment> tail;
     if (width >= 30) {
@@ -692,6 +692,10 @@ std::vector<BrowserView::Segment> BrowserView::toolbar(const BrowserSettings& se
     if (width >= 30 + sortWidth) {
         right -= sortWidth;
         tail.push_back({Hit::Sort, right, right + sortWidth - 1, true});
+    }
+    if (canSend_ && width >= 30) {
+        right -= 3;
+        tail.push_back({Hit::Send, right, right + 2, true});
     }
 
     segments.push_back({Hit::Path, 9, std::max(9, right - 1), true});
@@ -727,6 +731,7 @@ bool BrowserView::onClick(int row, int column, bool doubleClick,
             case Hit::Up:      return goUp(settings);
             case Hit::Sort:    if (onCycleSort) onCycleSort(); return true;
             case Hit::Filter:  beginFilter(); return true;
+            case Hit::Send:    if (onSend) onSend(); return true;
             case Hit::Path:
                 if (onCopyPath) onCopyPath();
                 return true;
@@ -784,11 +789,13 @@ Element BrowserView::renderToolbar(const Theme& theme, const BrowserSettings& se
     parts.push_back(button("↑", Hit::Up, current.parent_path() != current));
 
     int pathRoom = width - 9;
-    const int sortWidth = static_cast<int>(sortLabel(settings).size()) + 2;
+    const int sortWidth = displayWidth(sortLabel(settings)) + 2;
     const bool showFilter = width >= 30;
     const bool showSort = width >= 30 + sortWidth;
+    const bool showSend = canSend_ && width >= 30;
     if (showFilter) pathRoom -= 3;
     if (showSort) pathRoom -= sortWidth;
+    if (showSend) pathRoom -= 3;
 
     if (filtering_ || !filter_.text.empty()) {
         parts.push_back(text("/") | color(toFtx(theme.warning)));
@@ -805,6 +812,13 @@ Element BrowserView::renderToolbar(const Theme& theme, const BrowserSettings& se
         parts.push_back(filler());
     }
 
+    if (showSend) {
+        Element chip = text(" ⇅ ") | color(toFtx(theme.accentAlt));
+        if (hovered_ == Hit::Send) {
+            chip = std::move(chip) | bgcolor(toFtx(theme.selection)) | color(toFtx(theme.accent));
+        }
+        parts.push_back(std::move(chip));
+    }
     if (showSort) {
         Element chip = text(" " + sortLabel(settings) + " ") | color(toFtx(theme.muted));
         if (hovered_ == Hit::Sort) {

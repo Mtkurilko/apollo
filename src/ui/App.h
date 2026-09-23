@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -15,12 +16,14 @@
 #include "core/Config.h"
 #include "core/Control.h"
 #include "net/RemoteFs.h"
+#include "net/Transfer.h"
 #include "term/Session.h"
 #include "ui/Boot.h"
 #include "ui/BrowserView.h"
 #include "ui/ConfigView.h"
 #include "ui/Onboard.h"
 #include "ui/Palette.h"
+#include "ui/TransferForm.h"
 
 namespace apollo::ui {
 
@@ -30,7 +33,6 @@ public:
         bool runSetup = false;      // start in the wizard
         bool openConfig = false;    // start with the config screen up
         std::string connect;        // an SSH destination to open in the first tab
-        bool chooseConnection = false; // several are configured and none was named
         std::string workspace;      // overrides general.workspace
         std::string command;        // run this, then hand over to the shell
     };
@@ -76,6 +78,18 @@ private:
     // First column you can grab to drag. -1 if the panes aren't side by side.
     int dividerColumn(const Layout& layout) const;
     bool runBind(const KeyChord& chord);
+    // A key that isn't Apollo's: the browser if it has focus, else the shell.
+    void deliver(const KeyChord& chord, const std::string& raw);
+
+    // --- the leader -------------------------------------------------------
+    // Soft: the plain leader key, taken because typing it would do nothing
+    // here. Hard: a press that can only mean the leader.
+    enum class LeaderPress { None, Soft, Hard };
+    LeaderPress leaderPress(const KeyChord& chord) const;
+    // Space at an empty prompt, or in the browser when it isn't mid-search.
+    bool leaderIsFree() const;
+    ftxui::Element renderLeaderKeys(int width);
+
     void act(const std::string& action, const std::vector<std::string>& args);
     void runCommand(const Command& command);
     void openPalette();
@@ -87,6 +101,21 @@ private:
     void runOpener(const std::string& how, const std::filesystem::path& path);
     // The destination list, for when `apollo connect` wasn't told which one.
     void pickConnection();
+
+    // --- moving files between machines -------------------------------------
+    // Sends whatever the browser has selected to the other machine: down to
+    // this one from a remote listing, up to a connection from a local one.
+    void transferSelected();
+    // Where an upload to `conn` lands unless you say otherwise: its remote_dir,
+    // or home.
+    static std::string uploadDirFor(const Connection& conn);
+    // Destinations an upload could go to, likeliest first.
+    std::vector<std::string> uploadChoices() const;
+    void openTransfer(transfer::Job job, bool directory);
+    // Enter in the form: check this side now, the other side in the background.
+    void submitTransfer();
+    void finishTransfers();
+
     // Housekeeping beat. Returns true when something on screen actually moved,
     // so the caller can skip the repaint when nothing did.
     bool tick();
@@ -105,12 +134,14 @@ private:
     ftxui::Element renderSearch();
     ftxui::Element renderHints(int room);
 
-    // A yes/no question on top of everything. Only used for quitting with
-    // something still running, since that's the one thing you can't undo.
+    // A yes/no question on top of everything. For quitting with something
+    // still running, and for copying files onto another machine.
     struct Confirmation {
         std::string question;
         std::string detail;
         std::function<void()> onYes;
+        std::string yes = "yes";
+        std::string no = "cancel";
     };
     void askConfirm(Confirmation question);
     const term::Session* busyTab() const;
@@ -175,6 +206,15 @@ private:
     bool put(const std::string& path, const std::string& value);
 
     bool leaderArmed_ = false;
+    bool leaderSoft_ = false;
+    KeyChord leaderChord_;   // what armed it, sent through if it wasn't meant
+    std::string leaderRaw_;
+    std::chrono::steady_clock::time_point leaderArmedAt_{};
+
+    transfer::Runner transfers_;
+    TransferForm transferForm_;
+    // The machine the pane last showed. Goes first when asking where to send.
+    std::string lastRemote_;
     bool helpOpen_ = false;
     std::optional<Confirmation> confirm_;
     Hotspots confirmSpots_;

@@ -88,8 +88,25 @@ std::optional<KeyChord> KeyChord::parse(const std::string& modifiers,
 
 std::optional<KeyChord> KeyChord::parse(const std::string& spec) {
     const auto comma = spec.find(',');
-    if (comma == std::string::npos) return parse("", spec);
-    return parse(spec.substr(0, comma), spec.substr(comma + 1));
+    if (comma != std::string::npos) return parse(spec.substr(0, comma), spec.substr(comma + 1));
+
+    // "ctrl+space", "Ctrl-Shift-K", "C-a". Peel modifiers off the front while
+    // what's left still has a key in it, so "ctrl++" and "-" stay keys.
+    static const std::map<std::string, std::string> shortMods = {
+        {"c", "ctrl"}, {"m", "alt"}, {"s", "shift"},
+    };
+    std::string mods;
+    std::string rest = trim(spec);
+    for (;;) {
+        const auto sep = rest.find_first_of("+-");
+        if (sep == std::string::npos || sep == 0 || sep + 1 >= rest.size()) break;
+        std::string name = lower(rest.substr(0, sep));
+        if (const auto it = shortMods.find(name); it != shortMods.end()) name = it->second;
+        if (!parse(name, "x")) break; // not a modifier, so the separator is part of the key
+        mods += name + " ";
+        rest = rest.substr(sep + 1);
+    }
+    return parse(mods, rest);
 }
 
 std::string KeyChord::describe() const {
@@ -105,6 +122,55 @@ std::string KeyChord::describe() const {
 
     std::string name = key;
     if (!name.empty()) name[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(name[0])));
+    return out + name;
+}
+
+std::optional<std::vector<KeyChord>> KeyChord::parseList(const std::string& spec) {
+    std::vector<KeyChord> out;
+    if (trim(spec).empty()) return out;
+    if (const auto one = parse(spec)) return std::vector<KeyChord>{*one};
+
+    std::string token;
+    std::istringstream words(spec);
+    while (words >> token) {
+        // Commas separate as well as spaces do; a lone "," is the comma key.
+        std::string item = token;
+        while (item.size() > 1 && item.back() == ',') item.pop_back();
+        if (item.empty()) continue;
+        const auto chord = parse(item);
+        if (!chord) return std::nullopt;
+        if (std::find(out.begin(), out.end(), *chord) == out.end()) out.push_back(*chord);
+    }
+    return out;
+}
+
+std::string KeyChord::describeList(const std::vector<KeyChord>& chords) {
+    std::string out;
+    for (std::size_t i = 0; i < chords.size(); ++i) {
+        if (i > 0) out += i + 1 == chords.size() ? " or " : ", ";
+        out += chords[i].describe();
+    }
+    return out;
+}
+
+std::string KeyChord::spec() const {
+    std::string out;
+    if (mods & ModLeader) out += "LEADER+";
+    if (mods & ModCtrl) out += "CTRL+";
+    if (mods & ModAlt) out += "ALT+";
+    if (mods & ModShift) out += "SHIFT+";
+    if (mods & ModSuper) out += "SUPER+";
+    // Punctuation reads back as its name, so the result parses either way.
+    for (const auto& [name, symbol] : keyAliases()) {
+        if (symbol != key || name.size() < 2 || key.size() != 1) continue;
+        std::string upper = name;
+        std::transform(upper.begin(), upper.end(), upper.begin(),
+                       [](unsigned char c) { return std::toupper(c); });
+        return out + upper;
+    }
+    std::string name = key;
+    std::transform(name.begin(), name.end(), name.begin(),
+                   [](unsigned char c) { return std::toupper(c); });
     return out + name;
 }
 
@@ -155,6 +221,7 @@ const std::vector<ActionInfo>& knownActions() {
         {"connect",         "Connect to an SSH destination", true},
         {"disconnect",      "Return to the local machine", false},
         {"open_with",       "Choose what opens the selected file", false},
+        {"transfer",        "Send the selected file to the other machine", false},
         {"run",             "Run an Apollo command by name", true},
         {"exec",            "Run a shell command in the terminal", true},
         {"cd",              "Change the working directory", true},

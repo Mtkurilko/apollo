@@ -57,9 +57,15 @@ const std::vector<Config::Setting>& Config::schema() {
         s.push_back(str("general.workspace", "~", "Directory Apollo opens in", Type::Path));
         s.push_back(str("general.shell", "", "Shell to run; empty means your login shell", Type::Path));
         s.push_back(str("general.editor", "", "Editor for `apollo config edit`; empty means $EDITOR", Type::Path));
-        s.push_back(str("general.default_connection", "", "Used by a bare `apollo connect`"));
         s.push_back(flag("general.follow_cwd", true, "The browser follows the shell's directory"));
         s.push_back(flag("general.confirm_quit", false, "Ask before leaving with a command still running"));
+        Setting leader = choice("general.leader", "space",
+                                {"space", "ctrl+space", "ctrl+a", "ctrl+b", "alt+space", "`"},
+                                "The key in front of Apollo's own keys");
+        leader.openChoices = true; // any chord works; these are the usual ones
+        s.push_back(std::move(leader));
+        s.push_back(str("general.leader_anywhere", "ctrl+space, ctrl+backslash",
+                        "Keys that are the leader everywhere, even where Space types a space"));
         s.push_back(flag("general.disconnect_closes_tab", true,
                          "Disconnecting closes the tab, instead of leaving a local shell in it"));
 
@@ -148,6 +154,10 @@ std::string Config::validate(const Setting& s, const std::string& value) {
             return "";
         }
         case Type::Enum: {
+            if (s.path == "general.leader") {
+                return KeyChord::parse(value) ? ""
+                                              : "expected a key, like space, ctrl+space or ctrl+a";
+            }
             if (s.openChoices) return "";
             if (std::find(s.choices.begin(), s.choices.end(), ConfigFile::trim(value)) ==
                 s.choices.end()) {
@@ -162,12 +172,16 @@ std::string Config::validate(const Setting& s, const std::string& value) {
             return Rgb::parse(value) ? "" : "expected #rrggbb, rgb(r,g,b) or a color name";
         case Type::Path:
         case Type::String:
+            if (s.path == "general.leader_anywhere" && !KeyChord::parseList(value)) {
+                return "expected keys like ctrl+space, ctrl+backslash";
+            }
             return "";
     }
     return "";
 }
 
 std::string Config::valueOf(const Setting& s) const {
+    if (s.path == "general.leader" && !file_.get(s.path)) return file_.get("leader", s.defaultValue);
     return file_.get(s.path, s.defaultValue);
 }
 
@@ -211,6 +225,7 @@ const std::vector<Bind>& Config::defaultBinds() {
             {"LEADER, U",         {"browser_up"}},
             {"LEADER, Y",         {"copy_path"}},
             {"LEADER, V",         {"paste_path"}},
+            {"LEADER, A",         {"transfer"}},
         };
 
         std::vector<Bind> out;
@@ -239,6 +254,8 @@ $accent = #7aa2f7
 
 general {
     workspace   = ~
+    leader      = space         # or ctrl+space, ctrl+a, alt+space, ...
+    leader_anywhere = ctrl+space, ctrl+backslash  # the leader even mid-command
     follow_cwd  = true          # the browser follows your shell's directory
     # shell     = /bin/zsh      # empty means your login shell
     # editor    = nvim
@@ -282,14 +299,17 @@ browser {
 #
 #   bind = <modifiers>, <key>, <action>, <argument>
 #
-# LEADER means "after the leader key", Ctrl+Space unless you change it.
-# Apollo's keys sit behind the leader so Ctrl-A, Ctrl-C, Ctrl-K and the rest
-# stay with the program running in your terminal.
+# LEADER means "after the leader key", general.leader above. Apollo's keys sit
+# behind it so Ctrl-A, Ctrl-C, Ctrl-K and the rest stay with the program in
+# your terminal.
+#
+# Space is the leader where a space would do nothing: in the browser, and at
+# an empty prompt. Anywhere else it types a space, and general.leader_anywhere
+# (Ctrl+Space, or Ctrl+\ where the system keeps Ctrl+Space for switching
+# input languages) is the leader instead. Space then an unbound key types both.
 #
 # `apollo config` lists every action, and `unbind` removes one of the defaults.
 # ---------------------------------------------------------------------------
-
-leader = CTRL, SPACE
 
 # bind   = LEADER, G, exec, git status
 # unbind = LEADER, Q
@@ -323,7 +343,7 @@ leader = CTRL, SPACE
 # SSH destinations
 #
 # `apollo connect` with one connection configured uses it. With several, name
-# the one you want — `apollo connect lab` — or set general.default_connection.
+# the one you want: `apollo connect lab`, `apollo push notes.md lab:~/work`.
 # ---------------------------------------------------------------------------
 
 # connection lab {
@@ -428,14 +448,18 @@ void Config::derive() {
     general_.workspace = text("general.workspace", general_.workspace);
     general_.shell = text("general.shell", "");
     general_.editor = text("general.editor", "");
-    general_.defaultConnection = text("general.default_connection", "");
     general_.followCwd = yes("general.follow_cwd", true);
     general_.confirmQuit = yes("general.confirm_quit", false);
     general_.disconnectClosesTab = yes("general.disconnect_closes_tab", true);
 
-    if (const auto spec = file_.get("leader")) {
+    // general.leader, or a bare `leader = ` line from before it had a section.
+    if (const auto spec = file_.get("general.leader") ? file_.get("general.leader")
+                                                      : file_.get("leader")) {
         if (const auto chord = KeyChord::parse(*spec)) general_.leader = *chord;
         else note("leader: '" + *spec + "' is not a key Apollo knows");
+    }
+    if (const auto spec = file_.get("general.leader_anywhere")) {
+        if (const auto chords = KeyChord::parseList(*spec)) general_.leaderAnywhere = *chords;
     }
 
     decoration_ = DecorationSettings{};
@@ -478,6 +502,8 @@ void Config::derive() {
                                                          "browser", "colors"};
         if (std::find(checked.begin(), checked.end(), section.name) == checked.end()) continue;
         for (const auto& entry : section.entries) {
+            // Settings Apollo has retired. Doctor mentions them; they aren't errors.
+            if (section.name + "." + entry.key == "general.default_connection") continue;
             if (!setting(section.name + "." + entry.key)) {
                 note("unknown setting '" + section.name + "." + entry.key + "'" +
                      (entry.line >= 0 ? " (line " + std::to_string(entry.line + 1) + ")" : ""));
@@ -554,10 +580,6 @@ void Config::derive() {
         connections_.push_back(std::move(conn));
     }
 
-    if (!general_.defaultConnection.empty() && !connection(general_.defaultConnection)) {
-        note("general.default_connection names '" + general_.defaultConnection +
-             "', which is not configured");
-    }
 }
 
 std::optional<Theme> Config::loadThemeFile(const std::string& name) {
@@ -718,21 +740,19 @@ std::optional<Connection> Config::resolveConnection(const std::string& requested
                 "  apollo config add <name> <user>@<host>";
         return std::nullopt;
     }
+    // One is unambiguous. More than one and you say which: a guess that picks
+    // the wrong machine is worse than a question.
     if (connections_.size() == 1) return connections_.front();
 
-    if (!general_.defaultConnection.empty()) {
-        if (const Connection* found = connection(general_.defaultConnection)) return *found;
-    }
-
-    error = "Several connections are configured, so name the one you want:\n"
-            "  apollo connect <name>\nConfigured: " + listNames() +
-            "\nOr choose a default: apollo config default <name>";
+    error = "Several destinations are configured, so name the one you want:\n"
+            "  apollo connect <name>\nConfigured: " + listNames();
     return std::nullopt;
 }
 
 // --- writing ---------------------------------------------------------------
 
-bool Config::set(const std::string& path, const std::string& value, std::string* error) {
+bool Config::set(const std::string& requested, const std::string& value, std::string* error) {
+    const std::string path = requested == "leader" ? "general.leader" : requested;
     if (const Setting* s = setting(path)) {
         if (const std::string problem = validate(*s, value); !problem.empty()) {
             if (error) *error = path + ": " + problem;
@@ -744,12 +764,18 @@ bool Config::set(const std::string& path, const std::string& value, std::string*
     }
 
     file_.set(path, value);
+    // One place says what the leader is. The old top-level line would only
+    // confuse whoever reads the file next.
+    if (path == "general.leader") file_.unset("leader");
     derive();
     return true;
 }
 
-bool Config::unset(const std::string& path) {
-    if (!file_.unset(path)) return false;
+bool Config::unset(const std::string& requested) {
+    const std::string path = requested == "leader" ? "general.leader" : requested;
+    bool removed = file_.unset(path);
+    if (path == "general.leader") removed = file_.unset("leader") || removed;
+    if (!removed) return false;
     derive();
     return true;
 }
@@ -785,7 +811,6 @@ bool Config::addConnection(const Connection& conn, std::string* error) {
     if (!conn.jump.empty()) file_.set(base + "jump", conn.jump);
 
     derive();
-    if (connections_.size() == 1) setDefaultConnection(conn.name);
     return true;
 }
 
@@ -793,18 +818,6 @@ bool Config::removeConnection(const std::string& name) {
     if (!connection(name)) return false;
     if (!file_.removeSection("connection." + name)) return false;
 
-    if (general_.defaultConnection == name) file_.unset("general.default_connection");
-    derive();
-    return true;
-}
-
-bool Config::setDefaultConnection(const std::string& name, std::string* error) {
-    if (!name.empty() && !connection(name)) {
-        if (error) *error = "No connection named '" + name + "'.";
-        return false;
-    }
-    if (name.empty()) file_.unset("general.default_connection");
-    else file_.set("general.default_connection", name);
     derive();
     return true;
 }
@@ -951,10 +964,6 @@ std::optional<std::string> migrateLegacyConfig(const fs::path& properties) {
     out << "general {\n";
     if (const auto it = values.find("apollo.root"); it != values.end() && !it->second.empty()) {
         out << "    workspace = " << it->second << "\n";
-    }
-    if (const auto it = values.find("apollo.defaultConnection");
-        it != values.end() && !it->second.empty()) {
-        out << "    default_connection = " << it->second << "\n";
     }
     out << "}\n";
 

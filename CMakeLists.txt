@@ -49,6 +49,7 @@ add_library(apollo_core STATIC
     src/core/Process.cpp
     src/net/Ssh.cpp
     src/net/RemoteFs.cpp
+    src/net/Transfer.cpp
     src/term/Pty.cpp
     src/term/Screen.cpp
     src/term/VtParser.cpp
@@ -73,6 +74,7 @@ add_executable(apollo
     src/ui/TerminalView.cpp
     src/ui/BrowserView.cpp
     src/ui/Palette.cpp
+    src/ui/TransferForm.cpp
     src/ui/ConfigView.cpp
     src/ui/Onboard.cpp
     src/ui/Widgets.cpp

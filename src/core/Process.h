@@ -26,6 +26,10 @@ Result run(const std::vector<std::string>& argv,
            const std::string& workingDir = "",
            const Env& extraEnv = {});
 
+// Runs argv on this terminal -- its prompts and progress meters and all --
+// and waits. Returns the exit code, 127 if it couldn't start.
+int runAttached(const std::vector<std::string>& argv, const Env& extraEnv = {});
+
 Result shell(const std::string& command,
              std::chrono::milliseconds timeout = std::chrono::seconds(20),
              const std::string& workingDir = "");

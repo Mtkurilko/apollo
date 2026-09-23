@@ -19,14 +19,19 @@ std::string Connection::describe() const {
 namespace ssh {
 namespace {
 
+// scp takes the same options as ssh, except the port is -P and there's no
+// agent to forward.
 void addSharedOptions(std::vector<std::string>& argv, const Connection& conn,
-                      int timeoutSeconds) {
+                      int timeoutSeconds, bool forScp = false) {
     argv.push_back("-o"); argv.push_back("ControlMaster=auto");
     argv.push_back("-o"); argv.push_back("ControlPath=" + controlPath(conn));
     argv.push_back("-o"); argv.push_back("ControlPersist=300");
     argv.push_back("-o"); argv.push_back("ConnectTimeout=" + std::to_string(timeoutSeconds));
 
-    if (conn.port != 22) { argv.push_back("-p"); argv.push_back(std::to_string(conn.port)); }
+    if (conn.port != 22) {
+        argv.push_back(forScp ? "-P" : "-p");
+        argv.push_back(std::to_string(conn.port));
+    }
     if (!conn.keyPath.empty()) {
         argv.push_back("-i");
         argv.push_back(paths::expandUser(conn.keyPath));
@@ -34,15 +39,15 @@ void addSharedOptions(std::vector<std::string>& argv, const Connection& conn,
         argv.push_back("-o"); argv.push_back("IdentitiesOnly=yes");
     }
     if (!conn.jump.empty()) { argv.push_back("-J"); argv.push_back(conn.jump); }
-    if (conn.forwardAgent) argv.push_back("-A");
+    if (conn.forwardAgent && !forScp) argv.push_back("-A");
 }
 
 // Only reaches for sshpass when the connection actually needs it.
-Invocation begin(const Connection& conn) {
+Invocation begin(const Connection& conn, const std::string& program = "ssh") {
     if (conn.usesPassword()) {
-        return {{"sshpass", "-e", "ssh"}, {"SSHPASS=" + conn.password}};
+        return {{"sshpass", "-e", program}, {"SSHPASS=" + conn.password}};
     }
-    return {{"ssh"}, {}};
+    return {{program}, {}};
 }
 
 } // namespace
@@ -71,7 +76,9 @@ std::string quoteRemotePath(const std::string& path) {
         if (!std::isalnum(c) && c != '_' && c != '-' && c != '.') return quoteRemote(path);
     }
     if (slash == std::string::npos) return head;
-    return head + quoteRemote(path.substr(slash));
+    // The slash stays bare. Quoted, it hides the tilde from every shell but zsh.
+    if (slash + 1 == path.size()) return head + "/";
+    return head + "/" + quoteRemote(path.substr(slash + 1));
 }
 
 Invocation interactive(const Connection& conn) {
@@ -99,6 +106,17 @@ Invocation command(const Connection& conn, const std::string& remote) {
     call.argv.push_back("BatchMode=" + std::string(conn.usesPassword() ? "no" : "yes"));
     call.argv.push_back(conn.label());
     call.argv.push_back(remote);
+    return call;
+}
+
+Invocation copy(const Connection& conn, const std::vector<std::string>& args, bool batch) {
+    Invocation call = begin(conn, "scp");
+    addSharedOptions(call.argv, conn, 12, true);
+    if (batch) {
+        call.argv.push_back("-o");
+        call.argv.push_back("BatchMode=" + std::string(conn.usesPassword() ? "no" : "yes"));
+    }
+    call.argv.insert(call.argv.end(), args.begin(), args.end());
     return call;
 }
 
